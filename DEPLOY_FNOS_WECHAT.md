@@ -16,6 +16,13 @@
 /vol1/1000/docker/savextube-wechat
 ```
 
+如果是首次部署，可以直接克隆仓库：
+
+```bash
+git clone https://github.com/kyfour/savextube-wechat-clawbot.git /vol1/1000/docker/savextube-wechat
+cd /vol1/1000/docker/savextube-wechat
+```
+
 目录内需要这些子目录：
 
 ```bash
