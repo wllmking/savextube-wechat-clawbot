@@ -1,0 +1,8 @@
+yt-dlp>=2025.6.30
+requests==2.31.0
+python-dotenv==1.0.1
+PySocks==1.7.1
+urllib3
+httpx>=0.25.0
+pycryptodome
+tomli

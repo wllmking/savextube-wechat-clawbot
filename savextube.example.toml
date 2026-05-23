@@ -1,0 +1,38 @@
+# SaveXTube 微信 ClawBot 专用配置
+
+[wechat]
+# 首次登录后自动写入 /app/config/wechat_session.json；不建议手工填 token。
+session_file = "/app/config/wechat_session.json"
+base_url = "https://ilinkai.weixin.qq.com"
+cdn_base_url = "https://novac2c.cdn.weixin.qq.com/c2c"
+bot_agent = "SaveXTubeWeixin/1.0.0"
+
+# 可选。留空表示所有给机器人发消息的微信用户都可用。
+# 登录后日志或 wechat_session.json 里可看到 user_id。
+allowed_user_ids = ""
+
+# 微信不能编辑历史消息，只能追加发送进度；建议不要太频繁。
+progress_interval = 20
+
+# 单次下载最多回传多少个文件，防止播放列表刷屏。
+max_send_files = 20
+
+# 默认只支持这些平台：抖音、快手、微博、头条视频、小红书、B站。
+supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili"
+
+# 文件成功通过微信回传后删除容器内本地文件。
+cleanup_after_send = true
+
+[proxy]
+# proxy_host = "http://192.168.2.1:7890"
+
+[bilibili]
+bilibili_poll_interval = 1
+
+[logging]
+log_level = "INFO"
+log_dir = "/app/logs"
+log_max_size = 10
+log_backup_count = 5
+log_to_console = true
+log_to_file = true

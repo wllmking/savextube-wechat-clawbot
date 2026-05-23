@@ -1,0 +1,23 @@
+services:
+  savextube-wechat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: savextube-wechat:local
+    container_name: savextube-wechat
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Shanghai
+      DOWNLOAD_PATH: /downloads
+      SAVEXTUBE_WECHAT_ONLY: "1"
+      SAVEXTUBE_CONFIG: /app/config/savextube.toml
+      WECHAT_SESSION_FILE: /app/config/wechat_session.json
+      WECHAT_PROGRESS_INTERVAL: "20"
+      WECHAT_MAX_SEND_FILES: "20"
+    volumes:
+      - ./config:/app/config
+      - ./cookies:/app/cookies
+      - ./downloads:/downloads
+      - ./logs:/app/logs
+      - ./db:/app/db
+    command: ["run"]
