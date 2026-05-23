@@ -14,6 +14,9 @@ services:
       WECHAT_SESSION_FILE: /app/config/wechat_session.json
       WECHAT_PROGRESS_INTERVAL: "20"
       WECHAT_MAX_SEND_FILES: "20"
+      WECHAT_MAX_CONCURRENT_DOWNLOADS: "1"
+      WECHAT_CLEANUP_AFTER_SEND: "true"
+      WECHAT_FORCE_TRANSCODE_VIDEO: "false"
     volumes:
       - ./config:/app/config
       - ./cookies:/app/cookies
@@ -21,3 +24,9 @@ services:
       - ./logs:/app/logs
       - ./db:/app/db
     command: ["run"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "from pathlib import Path; cmd=Path('/proc/1/cmdline').read_bytes(); raise SystemExit(0 if b'savextube_wechat.py' in cmd and b'run' in cmd else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

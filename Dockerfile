@@ -27,10 +27,8 @@ RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends \
     ca-certificates \
-    curl \
     tzdata \
     ffmpeg \
-    fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .

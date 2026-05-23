@@ -4,9 +4,9 @@
 
 这个部署只启动微信 ClawBot 入口。
 
-用户给微信机器人发链接后，容器会下载到 `/downloads`，再通过 ClawBot 的 `getuploadurl` + CDN 上传 + `sendmessage` 以微信视频消息回传。文件成功回传后，默认会删除容器里的本地下载文件。
+用户给微信机器人发链接后，容器会下载到 `/downloads`，再通过 ClawBot 的 `getuploadurl` + CDN 上传 + `sendmessage` 以微信视频消息回传。文件成功回传后，默认会删除容器里的本地下载文件；如果要留档，可以配置为保留到宿主机 `downloads/`。
 
-默认支持平台只保留：抖音、快手、微博、头条视频、小红书、B站。
+默认支持平台只保留：抖音、快手、微博、头条视频、小红书、B站。其中抖音支持视频和图文/Live Photo 笔记。
 
 ## 目录
 
@@ -48,11 +48,20 @@ cp savextube.example.toml config/savextube.toml
 allowed_user_ids = ""
 progress_interval = 20
 max_send_files = 20
+max_concurrent_downloads = 1
 supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili"
 cleanup_after_send = true
 ```
 
 `allowed_user_ids` 留空表示任何给机器人发消息的人都可用。登录成功后，`config/wechat_session.json` 中会出现 `user_id`，可以把它填入 `allowed_user_ids` 做白名单。
+
+`cleanup_after_send = true` 表示微信发送成功后删除本地下载文件。要保留文件就改成：
+
+```toml
+cleanup_after_send = false
+```
+
+保留后的文件在 NAS 部署目录下的 `downloads/`。
 
 ## 首次登录
 
@@ -90,7 +99,7 @@ docker logs -f savextube-wechat
 
 ## 使用
 
-在微信里给 ClawBot 发抖音、快手、微博、头条视频、小红书或 B站视频链接：
+在微信里给 ClawBot 发抖音、快手、微博、头条视频、小红书或 B站链接：
 
 ```text
 https://www.bilibili.com/video/BVxxxxxxxxxx
@@ -98,7 +107,9 @@ https://www.bilibili.com/video/BVxxxxxxxxxx
 
 机器人会先回文字进度，下载完成后以微信文件形式发送本地下载文件。
 
-视频发送前会用 `ffmpeg` 整理成 H.264/AAC MP4，尽量让手机微信直接播放。
+视频发送前会用 `ffmpeg` 快速整理为微信更容易播放的 MP4；源文件不兼容时才转为 H.264/AAC MP4，尽量让手机微信直接播放。
+
+抖音普通视频和 `/note/` 图文/Live Photo 会优先走移动分享页解析器，yt-dlp 只作为备用；有音频或 Live Photo 素材时会合成为 MP4，只有静态图片时回传图片文件。
 
 ## Cookies
 

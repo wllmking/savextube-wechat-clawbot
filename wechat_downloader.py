@@ -20,19 +20,21 @@ from urllib.parse import urlparse
 import requests
 import yt_dlp
 
+from douyin_note_downloader import is_douyin_aweme_url
+
 logger = logging.getLogger("savextube.wechat_downloader")
 
 ProgressCallback = Optional[Callable[[Dict[str, Any]], None]]
 
 
-SUPPORTED_PLATFORMS = {
+SUPPORTED_PLATFORMS = (
     "douyin",
     "kuaishou",
     "weibo",
     "toutiao",
     "xiaohongshu",
     "bilibili",
-}
+)
 
 
 COOKIE_ENV = {
@@ -158,6 +160,12 @@ class WeChatVideoDownloader:
             return {"success": False, "error": f"unsupported platform: {platform}"}
 
         normalized_url = await asyncio.to_thread(self.normalize_url, url, platform)
+        if platform == "douyin" and is_douyin_aweme_url(normalized_url):
+            douyin_result = await self._try_douyin_direct(normalized_url, progress_callback)
+            if douyin_result.get("success"):
+                return douyin_result
+            logger.info("douyin mobile share downloader failed, falling back to yt-dlp: %s", douyin_result.get("error"))
+
         if platform == "xiaohongshu":
             xhs_result = await self._try_xiaohongshu_direct(normalized_url, progress_callback)
             if xhs_result.get("success"):
@@ -177,6 +185,14 @@ class WeChatVideoDownloader:
         url = url.strip()
         if platform == "bilibili":
             url = self._normalize_bilibili_url(url)
+        elif platform == "douyin":
+            url = self._normalize_douyin_url(url)
+        return url
+
+    def _normalize_douyin_url(self, url: str) -> str:
+        host = urlparse(url).netloc.lower()
+        if host == "v.douyin.com" or host.endswith(".v.douyin.com"):
+            return self._expand_redirect(url)
         return url
 
     def _normalize_bilibili_url(self, url: str) -> str:
@@ -195,11 +211,13 @@ class WeChatVideoDownloader:
 
     def _expand_redirect(self, url: str) -> str:
         try:
+            proxies = {"http": self.proxy, "https": self.proxy} if self.proxy else None
             response = requests.get(
                 url,
                 allow_redirects=True,
                 timeout=15,
                 headers={"User-Agent": self._user_agent()},
+                proxies=proxies,
             )
             return response.url or url
         except requests.RequestException as exc:
@@ -263,6 +281,9 @@ class WeChatVideoDownloader:
             "restrictfilenames": False,
             "windowsfilenames": True,
             "ignoreerrors": False,
+            "quiet": True,
+            "no_warnings": True,
+            "logger": logger,
             "retries": 5,
             "fragment_retries": 10,
             "concurrent_fragment_downloads": 4,
@@ -387,7 +408,7 @@ class WeChatVideoDownloader:
             cookie_header = _cookie_header_from_netscape(cookiefile)
             if cookie_header:
                 downloader.session.headers["Cookie"] = cookie_header
-            return downloader.download_note(url, str(output_dir), progress_callback=None)
+            return downloader.download_note(url, str(output_dir), progress_callback=progress_callback)
 
         result = await asyncio.to_thread(run)
         if result.get("success"):
@@ -408,6 +429,24 @@ class WeChatVideoDownloader:
             if progress_callback:
                 progress_callback({"status": "finished", "filename": result.get("title") or "小红书"})
         return result
+
+    async def _try_douyin_direct(self, url: str, progress_callback: ProgressCallback) -> Dict[str, Any]:
+        try:
+            from douyin_note_downloader import DouyinNoteDownloader
+        except ImportError as exc:
+            return {"success": False, "error": str(exc)}
+
+        output_dir = self.platform_dirs["douyin"]
+
+        def run() -> Dict[str, Any]:
+            cookiefile = self.cookie_files["douyin"]
+            downloader = DouyinNoteDownloader(
+                proxy=self.proxy,
+                cookie_header=_cookie_header_from_netscape(cookiefile),
+            )
+            return downloader.download_aweme(url, str(output_dir), progress_callback=progress_callback)
+
+        return await asyncio.to_thread(run)
 
     def _user_agent(self) -> str:
         return (

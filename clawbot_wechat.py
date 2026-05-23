@@ -136,6 +136,8 @@ class ClawBotClient:
         timeout: int = 30,
         long_poll_timeout: int = 40,
         bot_agent: str = BOT_AGENT,
+        request_retries: int = 2,
+        retry_backoff: float = 1.0,
     ):
         self.session_path = Path(session_path)
         self.base_url = base_url.rstrip("/")
@@ -145,6 +147,9 @@ class ClawBotClient:
         self.long_poll_timeout = long_poll_timeout
         self.bot_agent = bot_agent
         self.get_updates_buf = ""
+        self.request_retries = max(0, request_retries)
+        self.retry_backoff = max(0.1, retry_backoff)
+        self.http = requests.Session()
 
     @property
     def configured(self) -> bool:
@@ -208,6 +213,49 @@ class ClawBotClient:
         base = (base_url or self.base_url).rstrip("/") + "/"
         return urljoin(base, endpoint)
 
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        retry: bool = True,
+        **kwargs: Any,
+    ) -> requests.Response:
+        attempts = self.request_retries + 1 if retry else 1
+        last_exc: Optional[BaseException] = None
+        for attempt in range(attempts):
+            try:
+                response = self.http.request(method, url, **kwargs)
+                if response.status_code not in {408, 429} and response.status_code < 500:
+                    return response
+                if attempt >= attempts - 1:
+                    return response
+                logger.warning("%s %s returned %s, retrying", method.upper(), url, response.status_code)
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt >= attempts - 1:
+                    raise
+                logger.warning("%s %s failed: %s; retrying", method.upper(), url, exc)
+            time.sleep(self.retry_backoff * (2 ** attempt))
+        if last_exc:
+            raise last_exc
+        raise ClawBotError(f"{method.upper()} {url} failed without response")
+
+    def _json_response(self, endpoint: str, response: requests.Response) -> Dict[str, Any]:
+        if not response.text:
+            return {}
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise ClawBotError(f"{endpoint} returned non-JSON response: {response.text[:500]}") from exc
+        if not isinstance(data, dict):
+            raise ClawBotError(f"{endpoint} returned unexpected JSON: {data}")
+
+        for key in ("ret", "errcode", "error_code"):
+            if key in data and data.get(key) not in (None, "", 0, "0"):
+                raise ClawBotError(f"{endpoint} returned error: {data}")
+        return data
+
     def post(
         self,
         endpoint: str,
@@ -217,15 +265,17 @@ class ClawBotClient:
         timeout: Optional[int] = None,
         base_url: Optional[str] = None,
     ) -> Dict[str, Any]:
-        response = requests.post(
+        response = self._request(
+            "post",
             self._url(endpoint, base_url),
             headers=self._headers(auth=auth),
             json=body,
             timeout=timeout or self.timeout,
+            retry=endpoint != "ilink/bot/getupdates",
         )
         if response.status_code >= 400:
             raise ClawBotError(f"POST {endpoint} failed: {response.status_code} {response.text[:500]}")
-        return response.json() if response.text else {}
+        return self._json_response(endpoint, response)
 
     def get(
         self,
@@ -235,14 +285,15 @@ class ClawBotClient:
         timeout: Optional[int] = None,
         base_url: Optional[str] = None,
     ) -> Dict[str, Any]:
-        response = requests.get(
+        response = self._request(
+            "get",
             self._url(endpoint, base_url),
             headers=self._headers(auth=auth),
             timeout=timeout or self.timeout,
         )
         if response.status_code >= 400:
             raise ClawBotError(f"GET {endpoint} failed: {response.status_code} {response.text[:500]}")
-        return response.json() if response.text else {}
+        return self._json_response(endpoint, response)
 
     def login_with_qr(self, timeout_seconds: int = 480, bot_type: str = DEFAULT_BOT_TYPE) -> WeChatSession:
         qr_resp = self.post(
@@ -433,13 +484,31 @@ class ClawBotClient:
 
         encrypted_path = _encrypt_file_aes_ecb_to_temp(path, aes_key)
         try:
-            with encrypted_path.open("rb") as f:
-                upload_result = requests.post(
-                    upload_url,
-                    headers={"Content-Type": "application/octet-stream"},
-                    data=f,
-                    timeout=max(self.timeout, 120),
-                )
+            upload_result = None
+            for attempt in range(self.request_retries + 1):
+                try:
+                    with encrypted_path.open("rb") as f:
+                        upload_result = self.http.post(
+                            upload_url,
+                            headers={"Content-Type": "application/octet-stream"},
+                            data=f,
+                            timeout=max(self.timeout, 120),
+                        )
+                except requests.RequestException as exc:
+                    if attempt >= self.request_retries:
+                        raise
+                    logger.warning("CDN upload failed: %s; retrying", exc)
+                    time.sleep(self.retry_backoff * (2 ** attempt))
+                    continue
+                if upload_result.status_code == 200:
+                    break
+                if upload_result.status_code not in {408, 429} and upload_result.status_code < 500:
+                    break
+                if attempt < self.request_retries:
+                    logger.warning("CDN upload returned %s, retrying", upload_result.status_code)
+                    time.sleep(self.retry_backoff * (2 ** attempt))
+            if upload_result is None:
+                raise ClawBotError("CDN upload failed without response")
             if upload_result.status_code != 200:
                 raise ClawBotError(
                     f"CDN upload failed: {upload_result.status_code} "

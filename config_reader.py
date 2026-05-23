@@ -28,26 +28,3 @@ def get_proxy_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "proxy_host": proxy.get("proxy_host") or os.getenv("PROXY_HOST", ""),
         "enabled": bool(proxy.get("proxy_host") or os.getenv("PROXY_HOST")),
     }
-
-
-def get_logging_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    logging_config = config.get("logging") or {}
-    return {
-        "log_level": logging_config.get("log_level", "INFO"),
-        "log_dir": logging_config.get("log_dir", "/app/logs"),
-        "log_max_size": logging_config.get("log_max_size", 10),
-        "log_backup_count": logging_config.get("log_backup_count", 5),
-        "log_to_console": logging_config.get("log_to_console", True),
-        "log_to_file": logging_config.get("log_to_file", True),
-    }
-
-
-def get_bilibili_config(config: Dict[str, Any]) -> Dict[str, Any]:
-    bilibili = config.get("bilibili") or {}
-    return {
-        "poll_interval": bilibili.get("bilibili_poll_interval", 1),
-    }
-
-
-def print_config_summary(config: Dict[str, Any]) -> None:
-    return None

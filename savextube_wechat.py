@@ -20,8 +20,10 @@ import signal
 import shutil
 import subprocess
 import time
+from collections import deque
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Deque, Dict, List, Optional, Sequence
 
 import requests
 
@@ -34,6 +36,8 @@ logger = logging.getLogger("savextube.wechat_runner")
 
 DEFAULT_SUPPORTED_PLATFORMS = {"douyin", "kuaishou", "weibo", "toutiao", "xiaohongshu", "bilibili"}
 VIDEO_SUFFIXES = {".mp4", ".m4v", ".mov", ".mkv", ".webm", ".flv", ".avi", ".ts"}
+MAX_REMEMBERED_MESSAGES = 1000
+FILE_MTIME_TOLERANCE_SECONDS = 1.0
 
 
 def _first_existing_config_path() -> str:
@@ -58,11 +62,35 @@ def _load_config() -> Dict[str, Any]:
     return config or {}
 
 
-def _config_value(config: Dict[str, Any], section: str, key: str, env_key: str, default: Any = "") -> Any:
-    value = (config.get(section) or {}).get(key)
-    if value is None or value == "":
-        value = os.getenv(env_key, default)
-    return value
+def _configure_logging(config: Dict[str, Any]) -> None:
+    logging_config = config.get("logging") or {}
+    level_name = str(logging_config.get("log_level") or os.getenv("LOG_LEVEL", "INFO")).upper()
+    level = getattr(logging, level_name, logging.INFO)
+    log_format = "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    handlers: List[logging.Handler] = []
+
+    if _parse_bool(logging_config.get("log_to_console"), default=True):
+        handlers.append(logging.StreamHandler())
+
+    if _parse_bool(logging_config.get("log_to_file"), default=True):
+        log_dir = Path(str(logging_config.get("log_dir") or os.getenv("LOG_DIR", "/app/logs")))
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            max_size_mb = _parse_int(logging_config.get("log_max_size"), default=10)
+            backup_count = _parse_int(logging_config.get("log_backup_count"), default=5, minimum=0)
+            handlers.append(
+                RotatingFileHandler(
+                    log_dir / "savextube-wechat.log",
+                    maxBytes=max_size_mb * 1024 * 1024,
+                    backupCount=backup_count,
+                    encoding="utf-8",
+                )
+            )
+        except OSError as exc:
+            handlers.append(logging.StreamHandler())
+            logging.getLogger("savextube.wechat_runner").warning("file logging disabled: %s", exc)
+
+    logging.basicConfig(level=level, format=log_format, handlers=handlers or None, force=True)
 
 
 def _parse_allowed_users(raw: str) -> set[str]:
@@ -76,6 +104,26 @@ def _parse_supported_platforms(raw: str) -> set[str]:
         return set(DEFAULT_SUPPORTED_PLATFORMS)
     values = {part.strip().lower() for part in re.split(r"[,;\s]+", raw) if part.strip()}
     return values or set(DEFAULT_SUPPORTED_PLATFORMS)
+
+
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_int(value: Any, default: int, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _parse_float(value: Any, default: float, minimum: float = 0.0) -> float:
+    try:
+        return max(minimum, float(value))
+    except (TypeError, ValueError):
+        return default
 
 
 def _extract_first_url(text: str, downloader: Any) -> Optional[str]:
@@ -123,6 +171,16 @@ def _format_progress(data: Dict[str, Any]) -> Optional[str]:
         f"已下载：{_format_bytes(downloaded)}\n"
         f"速度：{_format_bytes(speed)}/s"
     )
+
+
+def _format_download_error(platform: str, error: str) -> str:
+    if "Fresh cookies" in error and platform == "douyin":
+        return (
+            "下载失败：抖音要求刷新 cookies。\n"
+            "这个链接已经识别为抖音视频，但当前 douyin_cookies.txt 不够新，"
+            "需要重新从已打开抖音的浏览器导出 cookies 后再试。"
+        )
+    return f"下载失败：{error or '未知错误'}"
 
 
 def _is_video_file(path: Path) -> bool:
@@ -181,15 +239,15 @@ def _prepare_wechat_video_file(path: Path) -> tuple[Path, List[Path]]:
     format_name = str((probe.get("format") or {}).get("format_name") or "").lower()
     pix_fmt = str(video_stream.get("pix_fmt") or "").lower()
 
-    force_transcode = os.getenv("WECHAT_FORCE_TRANSCODE_VIDEO", "true").lower() in {"1", "true", "yes"}
+    force_transcode = _parse_bool(os.getenv("WECHAT_FORCE_TRANSCODE_VIDEO"), default=False)
     crf = os.getenv("WECHAT_VIDEO_CRF", "20")
-    timeout = int(os.getenv("WECHAT_VIDEO_TRANSCODE_TIMEOUT", "1800"))
+    timeout = _parse_int(os.getenv("WECHAT_VIDEO_TRANSCODE_TIMEOUT", "1800"), default=1800)
     output = path.with_name(f"{path.stem}.wechat.mp4")
     output.unlink(missing_ok=True)
 
     compatible_mp4 = "mp4" in format_name or "mov" in format_name
     compatible_video = video_codec == "h264" and pix_fmt in {"", "yuv420p"}
-    compatible_audio = not audio_codecs or audio_codecs.issubset({"aac", "mp3"})
+    compatible_audio = bool(audio_streams) and audio_codecs.issubset({"aac"})
 
     if not force_transcode and compatible_mp4 and compatible_video and compatible_audio:
         cmd = [
@@ -315,6 +373,7 @@ def _bilibili_cookies_available(downloader: Any) -> bool:
 
 def _collect_result_files(result: Dict[str, Any], start_time: float, download_root: Path) -> List[Path]:
     candidates: List[Path] = []
+    min_mtime = start_time - FILE_MTIME_TOLERANCE_SECONDS
 
     def add(value: Any) -> None:
         if not value:
@@ -337,16 +396,23 @@ def _collect_result_files(result: Dict[str, Any], start_time: float, download_ro
             if filename and item_dir:
                 add(Path(item_dir) / filename)
 
-    download_path = Path(result.get("download_path") or "")
-    if download_path.exists() and download_path.is_dir():
-        for file_path in download_path.rglob("*"):
-            if file_path.is_file():
-                candidates.append(file_path)
+    if not candidates:
+        download_path = Path(result.get("download_path") or "")
+        if download_path.exists() and download_path.is_dir():
+            for file_path in download_path.rglob("*"):
+                try:
+                    if file_path.is_file() and file_path.stat().st_mtime >= min_mtime:
+                        candidates.append(file_path)
+                except OSError:
+                    continue
 
     if not candidates and download_root.exists():
         for file_path in download_root.rglob("*"):
-            if file_path.is_file() and file_path.stat().st_mtime >= start_time - 2:
-                candidates.append(file_path)
+            try:
+                if file_path.is_file() and file_path.stat().st_mtime >= min_mtime:
+                    candidates.append(file_path)
+            except OSError:
+                continue
 
     seen: set[str] = set()
     filtered: List[Path] = []
@@ -363,14 +429,28 @@ def _collect_result_files(result: Dict[str, Any], start_time: float, download_ro
                 continue
             if path.stat().st_size <= 0:
                 continue
-            if path.stat().st_mtime < start_time - 2 and not result.get("full_path"):
-                continue
             filtered.append(path)
         except OSError:
             continue
 
     filtered.sort(key=lambda p: p.stat().st_mtime)
     return filtered
+
+
+def _cleanup_empty_parent_dirs(file_path: Path, stop_at: Path) -> None:
+    try:
+        stop = stop_at.resolve()
+        parent = file_path.parent.resolve()
+    except OSError:
+        return
+
+    while parent != stop:
+        try:
+            parent.relative_to(stop)
+            parent.rmdir()
+        except (OSError, ValueError):
+            break
+        parent = parent.parent
 
 
 class WeChatSaveXTubeBot:
@@ -385,14 +465,23 @@ class WeChatSaveXTubeBot:
         wechat_config = config.get("wechat") or {}
         allowed_raw = str(wechat_config.get("allowed_user_ids") or os.getenv("WECHAT_ALLOWED_USER_IDS", ""))
         self.allowed_users = _parse_allowed_users(allowed_raw)
-        self.progress_interval = int(wechat_config.get("progress_interval") or os.getenv("WECHAT_PROGRESS_INTERVAL", "20"))
-        self.max_send_files = int(wechat_config.get("max_send_files") or os.getenv("WECHAT_MAX_SEND_FILES", "20"))
-        self.cleanup_after_send = str(wechat_config.get("cleanup_after_send") if "cleanup_after_send" in wechat_config else os.getenv("WECHAT_CLEANUP_AFTER_SEND", "true")).lower() in {"1", "true", "yes"}
+        self.progress_interval = _parse_int(wechat_config.get("progress_interval") or os.getenv("WECHAT_PROGRESS_INTERVAL", "20"), default=20)
+        self.max_send_files = _parse_int(wechat_config.get("max_send_files") or os.getenv("WECHAT_MAX_SEND_FILES", "20"), default=20)
+        self.max_concurrent_downloads = _parse_int(
+            wechat_config.get("max_concurrent_downloads") or os.getenv("WECHAT_MAX_CONCURRENT_DOWNLOADS", "1"),
+            default=1,
+        )
+        self.download_semaphore = asyncio.Semaphore(self.max_concurrent_downloads)
+        self.cleanup_after_send = _parse_bool(
+            wechat_config.get("cleanup_after_send") if "cleanup_after_send" in wechat_config else os.getenv("WECHAT_CLEANUP_AFTER_SEND"),
+            default=True,
+        )
         self.supported_platforms = _parse_supported_platforms(
             str(wechat_config.get("supported_platforms") or os.getenv("WECHAT_SUPPORTED_PLATFORMS", ""))
         )
         self.auto_playlist = str(wechat_config.get("bilibili_auto_playlist") or os.getenv("BILIBILI_AUTO_PLAYLIST", "false")).lower() in {"1", "true", "yes"}
         self.processed_message_ids: set[str] = set()
+        self.processed_message_order: Deque[str] = deque()
 
     def _permitted(self, user_id: str) -> bool:
         return not self.allowed_users or user_id in self.allowed_users
@@ -451,7 +540,7 @@ class WeChatSaveXTubeBot:
             return
 
         if not result or not (result.get("success") or result.get("status") == "success"):
-            await self.send_text(msg, f"下载失败：{(result or {}).get('error', '未知错误')}")
+            await self.send_text(msg, _format_download_error(platform, str((result or {}).get("error") or "")))
             return
 
         files = _collect_result_files(result, start_time, Path(self.downloader.download_path))
@@ -492,6 +581,7 @@ class WeChatSaveXTubeBot:
             for file_path in sent_files:
                 try:
                     file_path.unlink(missing_ok=True)
+                    _cleanup_empty_parent_dirs(file_path, Path(self.downloader.download_path))
                     deleted += 1
                 except Exception as exc:
                     logger.warning("cleanup failed for %s: %s", file_path, exc)
@@ -501,12 +591,19 @@ class WeChatSaveXTubeBot:
         if remaining > 0:
             await self.send_text(msg, f"已发送 {sent} 个文件，剩余 {remaining} 个未发送。可调整 WECHAT_MAX_SEND_FILES。")
 
+    def _remember_message(self, message_id: str) -> bool:
+        if message_id in self.processed_message_ids:
+            return False
+        self.processed_message_ids.add(message_id)
+        self.processed_message_order.append(message_id)
+        while len(self.processed_message_order) > MAX_REMEMBERED_MESSAGES:
+            expired = self.processed_message_order.popleft()
+            self.processed_message_ids.discard(expired)
+        return True
+
     async def handle_message(self, msg: WeChatInboundMessage) -> None:
-        if msg.message_id in self.processed_message_ids:
+        if not self._remember_message(msg.message_id):
             return
-        self.processed_message_ids.add(msg.message_id)
-        if len(self.processed_message_ids) > 1000:
-            self.processed_message_ids = set(list(self.processed_message_ids)[-500:])
 
         if not self._permitted(msg.from_user_id):
             await self.send_text(msg, "你没有权限使用此下载机器人。")
@@ -526,7 +623,9 @@ class WeChatSaveXTubeBot:
                 msg,
                 f"SaveXTube 微信版运行中。\n"
                 f"支持平台：抖音、快手、微博、头条视频、小红书、B站。\n"
-                f"下载目录：{self.downloader.download_path}",
+                f"下载目录：{self.downloader.download_path}\n"
+                f"并发下载：{self.max_concurrent_downloads}\n"
+                f"本地文件：{'发送成功后删除' if self.cleanup_after_send else '发送成功后保留'}",
             )
             return
 
@@ -534,7 +633,10 @@ class WeChatSaveXTubeBot:
         if not url:
             await self.send_text(msg, "请发送一个有效链接。")
             return
-        await self._handle_download(msg, url)
+        if self.download_semaphore.locked():
+            await self.send_text(msg, "当前已有下载任务在运行，本次请求已加入队列。")
+        async with self.download_semaphore:
+            await self._handle_download(msg, url)
 
     async def run(self) -> None:
         self.loop = asyncio.get_running_loop()
@@ -588,14 +690,18 @@ def _build_client(config: Dict[str, Any]) -> ClawBotClient:
         cdn_base_url=str(wechat.get("cdn_base_url") or os.getenv("WECHAT_CDN_BASE_URL", "https://novac2c.cdn.weixin.qq.com/c2c")),
         token=str(wechat.get("token") or os.getenv("WECHAT_BOT_TOKEN", "")),
         bot_agent=str(wechat.get("bot_agent") or os.getenv("WECHAT_BOT_AGENT", "SaveXTubeWeixin/1.0.0")),
+        request_retries=_parse_int(wechat.get("request_retries") or os.getenv("WECHAT_REQUEST_RETRIES", "2"), default=2, minimum=0),
+        retry_backoff=_parse_float(wechat.get("retry_backoff") or os.getenv("WECHAT_REQUEST_RETRY_BACKOFF", "1.0"), default=1.0, minimum=0.1),
     )
     if not client.token:
         client.load_session()
     return client
 
 
-async def _run_bot() -> None:
-    config = _load_config()
+async def _run_bot(config: Optional[Dict[str, Any]] = None) -> None:
+    if config is None:
+        config = _load_config()
+        _configure_logging(config)
     client = _build_client(config)
     if not client.configured:
         raise ClawBotError("微信未登录。请先执行：python3 savextube_wechat.py login")
@@ -620,12 +726,13 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     args = parser.parse_args(argv)
 
     config = _load_config()
-    client = _build_client(config)
+    _configure_logging(config)
     if args.command == "login":
+        client = _build_client(config)
         client.login_with_qr(timeout_seconds=args.timeout)
         return
     if args.command == "run":
-        asyncio.run(_run_bot())
+        asyncio.run(_run_bot(config))
 
 
 if __name__ == "__main__":

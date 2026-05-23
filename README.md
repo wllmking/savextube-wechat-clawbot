@@ -1,6 +1,6 @@
 # SaveXTube WeChat ClawBot
 
-微信 ClawBot 专用的视频下载机器人。用户在微信里给 ClawBot 发送视频链接，机器人下载后通过微信回传可播放的视频文件，发送成功后默认删除容器内本地文件。
+微信 ClawBot 专用的视频下载机器人。用户在微信里给 ClawBot 发送视频链接，机器人下载后通过微信回传可播放的视频文件，发送成功后默认删除容器内本地文件，也可以配置为保留到本地 `downloads/`。
 
 这个仓库是面向 NAS 自用部署的精简版，只保留微信入口和常用中文视频平台，不包含其他聊天机器人入口。
 
@@ -9,7 +9,7 @@
 | 平台 | 支持内容 | 登录 cookies 建议 |
 | --- | --- | --- |
 | B站 | BV/av/短链视频 | 建议配置，清晰度和会员内容依赖登录态 |
-| 抖音 | 分享链接、短链 | 建议配置，提高成功率 |
+| 抖音 | 视频、图文/Live Photo 笔记、短链 | 建议配置，提高成功率 |
 | 快手 | 分享链接、短链 | 建议配置，提高成功率 |
 | 微博 | 视频微博、分享链接 | 建议配置，登录可见内容依赖登录态 |
 | 头条视频 | 头条/西瓜常见链接 | 可选 |
@@ -19,10 +19,12 @@
 
 - 微信 ClawBot 扫码登录、轮询收消息、发送文本进度、上传并回传媒体文件。
 - 下载完成后通过 ClawBot CDN 以微信视频消息发送，手机微信更容易直接播放。
-- 回传前默认使用 `ffmpeg` 转为 H.264/AAC MP4，避免部分平台下载出来的格式微信不能直接播放。
+- 抖音视频和图文/Live Photo 会优先走移动分享页解析，减少 yt-dlp web 接口的 cookies/风控失败。
+- 抖音图文/Live Photo 笔记会优先合成 H.264/AAC MP4；只有静态图片时回传图片文件。
+- 回传前默认优先无损整理为微信更容易播放的 MP4；不兼容时才转为 H.264/AAC MP4，减少画质损失和 NAS 转码压力。
 - B站短链和 H5 分享链接会规整为普通 BV 视频页，减少低清派生流影响。
 - B站优先选择 AVC/MP4 原始流；最终清晰度取决于 cookies、账号权限和视频源本身。
-- 已发送文件默认清理，容器内不长期保留下载文件。
+- 已发送文件默认清理；需要留档时可关闭清理，文件保留在宿主机 `downloads/`。
 - Docker Compose 本机构建镜像，不需要 DockerHub 账号，也不需要推送镜像。
 
 ## 工作流程
@@ -31,11 +33,11 @@
 微信消息
   -> ClawBot getupdates
   -> 识别链接和平台
-  -> yt-dlp / 小红书备用解析器下载
-  -> ffmpeg 整理为微信可播放 MP4
+  -> yt-dlp / 抖音移动分享页解析器 / 小红书备用解析器下载
+  -> ffmpeg 快速整理或必要时转码为微信可播放 MP4
   -> ClawBot CDN 上传
   -> 微信视频消息回传
-  -> 成功后清理本地文件
+  -> 按配置清理或保留本地文件
 ```
 
 ## 目录结构
@@ -47,6 +49,7 @@
 ├── savextube_wechat.py
 ├── clawbot_wechat.py
 ├── wechat_downloader.py
+├── douyin_note_downloader.py
 ├── xiaohongshu_downloader.py
 ├── config_reader.py
 ├── requirements.txt
@@ -100,6 +103,7 @@ cp savextube.example.toml config/savextube.toml
 allowed_user_ids = ""
 progress_interval = 20
 max_send_files = 20
+max_concurrent_downloads = 1
 supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili"
 cleanup_after_send = true
 
@@ -108,6 +112,14 @@ cleanup_after_send = true
 ```
 
 `allowed_user_ids` 留空表示所有能给机器人发消息的微信用户都可以使用。需要限制时，登录后从日志或 `config/wechat_session.json` 里取用户 ID 填入。
+
+`cleanup_after_send = true` 表示微信发送成功后删除本地下载文件。想保留文件就改成：
+
+```toml
+cleanup_after_send = false
+```
+
+保留后文件会留在宿主机 `downloads/` 目录，后续需要手动清理。
 
 ## Cookies
 
@@ -132,6 +144,14 @@ yt-dlp --cookies-from-browser chrome --cookies cookies/bilibili_cookies.txt --si
 
 不要把 cookies、微信 session、`.env`、日志或下载文件提交到 Git。
 
+## 抖音视频和图文
+
+抖音普通视频和 `/note/` 图文笔记都会优先走移动分享页解析器，yt-dlp 只作为备用。这样可以避开部分 `aweme/detail` 接口返回空 JSON 导致的 `Fresh cookies` 错误。
+
+图文笔记会下载非水印图片；如果笔记带音频或 Live Photo 素材，会用 `ffmpeg` 合成为手机微信可直接播放的 MP4。
+
+如果抖音返回验证码/风控页面，机器人会返回明确错误。这种情况通常需要刷新 `cookies/douyin_cookies.txt`，或稍后重试。
+
 ## B站清晰度
 
 B站未登录时经常只能拿到 360P/480P。配置有效登录 cookies 后，一般可以拿到 720P/1080P；高码率、4K、HDR 和大会员内容仍取决于账号权限和视频本身是否提供。
@@ -140,15 +160,19 @@ B站未登录时经常只能拿到 360P/480P。配置有效登录 cookies 后，
 
 ## 微信回传
 
-视频会通过 ClawBot CDN 上传后以 `video_item` 发送。发送前默认转为 H.264/AAC MP4，以提高手机微信直接播放概率。
+视频会通过 ClawBot CDN 上传后以 `video_item` 发送。发送前默认先检查格式，兼容的 H.264/AAC MP4 只做快速整理和 `faststart`，不兼容时再转为 H.264/AAC MP4，以提高手机微信直接播放概率。
 
 可选环境变量：
 
 ```yaml
-WECHAT_FORCE_TRANSCODE_VIDEO: "true"
+WECHAT_FORCE_TRANSCODE_VIDEO: "false"
 WECHAT_VIDEO_CRF: "20"
 WECHAT_VIDEO_TRANSCODE_TIMEOUT: "1800"
+WECHAT_MAX_CONCURRENT_DOWNLOADS: "1"
+WECHAT_CLEANUP_AFTER_SEND: "true"
 ```
+
+如果想强制每个视频都重新转码，把 `WECHAT_FORCE_TRANSCODE_VIDEO` 改为 `"true"`。如果想微信发送成功后保留本地原文件，把 `WECHAT_CLEANUP_AFTER_SEND` 改为 `"false"` 或在 `config/savextube.toml` 里设置 `cleanup_after_send = false`。
 
 如果文件过大，可能受 ClawBot、CDN 或微信客户端限制。发送失败时，机器人会返回本地保存路径，并保留文件便于人工处理。
 
@@ -173,6 +197,21 @@ ARG PYTHON_IMAGE=docker.1ms.run/library/python:3.11-slim-bookworm
 
 ```bash
 docker compose build --build-arg PYTHON_IMAGE=python:3.11-slim-bookworm
+```
+
+## 测试
+
+不需要联网的最小自检：
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+部署到 NAS 前建议至少跑一次语法和单元测试：
+
+```bash
+python3 -m py_compile savextube_wechat.py clawbot_wechat.py wechat_downloader.py douyin_note_downloader.py xiaohongshu_downloader.py config_reader.py
+python3 -m unittest discover -s tests -v
 ```
 
 ## 飞牛 NAS
