@@ -15,6 +15,7 @@ import logging
 import mimetypes
 import os
 import random
+import re
 import secrets
 import tempfile
 import time
@@ -44,6 +45,7 @@ ITEM_FILE = 4
 ITEM_VIDEO = 5
 UPLOAD_MEDIA_VIDEO = 2
 UPLOAD_MEDIA_FILE = 3
+FINDER_FEED_CARD_MARKER = "__WECHAT_CHANNELS_CARD_WITHOUT_SPH__"
 
 
 class ClawBotError(RuntimeError):
@@ -124,6 +126,38 @@ def _chunks(text: str, max_len: int = 1800) -> Iterable[str]:
     while text:
         yield text[:max_len]
         text = text[max_len:]
+
+
+def _walk_strings(value: Any) -> Iterable[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for child in value.values():
+            yield from _walk_strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_strings(child)
+
+
+def _finder_card_summary(raw_text: str) -> str:
+    object_id = _xml_field(raw_text, "objectId")
+    nonce_id = _xml_field(raw_text, "objectNonceId")
+    desc = _xml_field(raw_text, "desc")
+    parts = [FINDER_FEED_CARD_MARKER]
+    if desc:
+        parts.append(f"title={desc[:80]}")
+    if object_id:
+        parts.append(f"object_id={object_id}")
+    if nonce_id:
+        parts.append(f"nonce_id={nonce_id}")
+    return "\n".join(parts)
+
+
+def _xml_field(text: str, name: str) -> str:
+    match = re.search(rf"<{re.escape(name)}><!\[CDATA\[(.*?)\]\]></{re.escape(name)}>", text, re.DOTALL)
+    if not match:
+        match = re.search(rf"<{re.escape(name)}>(.*?)</{re.escape(name)}>", text, re.DOTALL)
+    return match.group(1).strip() if match else ""
 
 
 class ClawBotClient:
@@ -407,6 +441,23 @@ class ClawBotClient:
                 text = (item.get("text_item") or {}).get("text")
                 if text:
                     text_parts.append(text)
+        raw_strings = [part for part in _walk_strings(raw) if part]
+        combined_text = "\n".join(text_parts)
+        if "weixin.qq.com/sph/" not in combined_text:
+            sph_match = next(
+                (
+                    match.group(0)
+                    for part in raw_strings
+                    for match in re.finditer(r"https?://weixin\.qq\.com/sph/[A-Za-z0-9_-]+[^\s<>'\"，。；、)）\]]*", part)
+                ),
+                "",
+            )
+            if sph_match:
+                text_parts.append(sph_match.rstrip(".,;，。；"))
+        if "weixin.qq.com/sph/" not in "\n".join(text_parts):
+            finder_part = next((part for part in raw_strings if "<finderFeed>" in part and "</finderFeed>" in part), "")
+            if finder_part:
+                text_parts.append(_finder_card_summary(finder_part))
         text = "\n".join(text_parts).strip()
         if not text:
             return None

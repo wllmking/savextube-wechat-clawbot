@@ -3,7 +3,7 @@
 """Downloader core for the WeChat ClawBot runtime.
 
 The public build intentionally keeps only the platforms needed by this bot:
-Douyin, Kuaishou, Weibo, Toutiao, Xiaohongshu, and Bilibili.
+    Douyin, Kuaishou, Weibo, Toutiao, Xiaohongshu, Bilibili, and WeChat Channels.
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ SUPPORTED_PLATFORMS = (
     "toutiao",
     "xiaohongshu",
     "bilibili",
+    "wechat_channels",
 )
 
 
@@ -44,6 +45,7 @@ COOKIE_ENV = {
     "toutiao": "TOUTIAO_COOKIES",
     "xiaohongshu": "XIAOHONGSHU_COOKIES",
     "bilibili": "BILIBILI_COOKIES",
+    "wechat_channels": "WECHAT_CHANNELS_YUANBAO_COOKIE_FILE",
 }
 
 
@@ -54,6 +56,7 @@ COOKIE_FILES = {
     "toutiao": "toutiao_cookies.txt",
     "xiaohongshu": "xiaohongshu_cookies.txt",
     "bilibili": "bilibili_cookies.txt",
+    "wechat_channels": "wechat_channels_yuanbao_cookies.txt",
 }
 
 
@@ -79,11 +82,13 @@ def _cookie_header_from_netscape(path: Path) -> str:
     if not path.exists():
         return ""
     pairs: List[str] = []
+    raw_lines: List[str] = []
     try:
         for raw in path.read_text(encoding="utf-8", errors="ignore").splitlines():
             line = raw.strip()
-            if not line or line.startswith("#"):
+            if not line or (line.startswith("#") and not line.startswith("#HttpOnly_")):
                 continue
+            raw_lines.append(line)
             fields = line.split("\t")
             if len(fields) >= 7:
                 name = fields[5].strip()
@@ -92,7 +97,10 @@ def _cookie_header_from_netscape(path: Path) -> str:
                     pairs.append(f"{name}={value}")
     except OSError:
         return ""
-    return "; ".join(pairs)
+    if pairs:
+        return "; ".join(pairs)
+    raw_cookie = "; ".join(line.rstrip(";") for line in raw_lines if "=" in line)
+    return raw_cookie.strip("; ")
 
 
 class WeChatVideoDownloader:
@@ -125,7 +133,8 @@ class WeChatVideoDownloader:
         bare_match = re.search(
             r"((?:v\.douyin|www\.douyin|www\.iesdouyin|www\.kuaishou|v\.kuaishou|"
             r"m\.weibo|weibo|www\.toutiao|m\.toutiao|xhslink|www\.xiaohongshu|"
-            r"b23|www\.bilibili|m\.bilibili)\.[^\s<>'\"，。；、)）\]]+)",
+            r"b23|www\.bilibili|m\.bilibili)\.[^\s<>'\"，。；、)）\]]+|"
+            r"weixin\.qq\.com/sph/[^\s<>'\"，。；、)）\]]+)",
             normalized,
             re.IGNORECASE,
         )
@@ -145,6 +154,8 @@ class WeChatVideoDownloader:
             return "xiaohongshu"
         if "bilibili.com" in host or "b23.tv" in host or "bili2233.cn" in host:
             return "bilibili"
+        if host == "finder.video.qq.com" or (host == "weixin.qq.com" and "/sph/" in urlparse(url).path.lower()):
+            return "wechat_channels"
         return "unknown"
 
     async def download_video(
@@ -171,6 +182,9 @@ class WeChatVideoDownloader:
             if xhs_result.get("success"):
                 return xhs_result
             logger.info("xiaohongshu direct downloader failed, falling back to yt-dlp: %s", xhs_result.get("error"))
+
+        if platform == "wechat_channels":
+            return await self._try_wechat_channels_direct(normalized_url, progress_callback)
 
         return await asyncio.to_thread(
             self._download_with_ytdlp,
@@ -310,6 +324,7 @@ class WeChatVideoDownloader:
             "toutiao": "https://www.toutiao.com/",
             "xiaohongshu": "https://www.xiaohongshu.com/",
             "bilibili": "https://www.bilibili.com/",
+            "wechat_channels": "https://channels.weixin.qq.com/",
         }
         headers["Referer"] = referers.get(platform, "")
         return headers
@@ -445,6 +460,24 @@ class WeChatVideoDownloader:
                 cookie_header=_cookie_header_from_netscape(cookiefile),
             )
             return downloader.download_aweme(url, str(output_dir), progress_callback=progress_callback)
+
+        return await asyncio.to_thread(run)
+
+    async def _try_wechat_channels_direct(self, url: str, progress_callback: ProgressCallback) -> Dict[str, Any]:
+        try:
+            from wechat_channels_downloader import WeChatChannelsDownloader
+        except ImportError as exc:
+            return {"success": False, "error": str(exc), "platform": "wechat_channels", "url": url}
+
+        output_dir = self.platform_dirs["wechat_channels"]
+
+        def run() -> Dict[str, Any]:
+            cookiefile = self.cookie_files["wechat_channels"]
+            downloader = WeChatChannelsDownloader(
+                proxy=self.proxy,
+                yuanbao_cookie=_cookie_header_from_netscape(cookiefile),
+            )
+            return downloader.download(url, str(output_dir), progress_callback=progress_callback)
 
         return await asyncio.to_thread(run)
 

@@ -14,6 +14,7 @@
 | 微博 | 视频微博、分享链接 | 建议配置，登录可见内容依赖登录态 |
 | 头条视频 | 头条/西瓜常见链接 | 可选 |
 | 小红书 | 视频笔记、图文笔记 | 建议配置，登录可见内容依赖登录态 |
+| 微信视频号 | `https://weixin.qq.com/sph/...` 分享短链、`finder.video.qq.com` 直链 | sph 短链本地解析需要元宝 Web cookie |
 
 ## 功能特点
 
@@ -25,6 +26,7 @@
 - 回传前默认优先无损整理为微信更容易播放的 MP4；不兼容时才转为 H.264/AAC MP4，减少画质损失和 NAS 转码压力。
 - B站短链和 H5 分享链接会规整为普通 BV 视频页，减少低清派生流影响。
 - B站优先选择 AVC/MP4 原始流；最终清晰度取决于 cookies、账号权限和视频源本身。
+- 微信视频号默认不接第三方解析 API；sph 分享短链由容器本地直连腾讯接口解析，需要配置自己的元宝 Web cookie。
 - 已发送文件默认清理；需要留档时可关闭清理，文件保留在宿主机 `downloads/`。
 - Docker Compose 本机构建镜像，不需要 DockerHub 账号，也不需要推送镜像。
 
@@ -34,7 +36,7 @@
 微信消息
   -> 一个或多个 ClawBot getupdates
   -> 识别链接和平台
-  -> yt-dlp / 抖音移动分享页解析器 / 小红书备用解析器下载
+  -> yt-dlp / 抖音移动分享页解析器 / 小红书备用解析器 / 视频号本地解析器下载
   -> ffmpeg 快速整理或必要时转码为微信可播放 MP4
   -> ClawBot CDN 上传
   -> 微信视频消息回传
@@ -106,11 +108,16 @@ progress_interval = 20
 max_send_files = 20
 max_concurrent_downloads = 1
 config_reload_interval = 15
-supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili"
+supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili,wechat_channels"
 cleanup_after_send = true
 
 [proxy]
 # proxy_host = "http://192.168.1.2:7890"
+
+[wechat_channels]
+# 默认不填，不接第三方 API；容器本地直连腾讯接口解析。
+# 如果你自建了 sph 解析服务，才显式设置 resolver_url。
+# resolver_url = "https://your-worker.example.com/api/fetch_video_profile"
 ```
 
 `allowed_user_ids` 留空表示所有能给机器人发消息的微信用户都可以使用。需要限制时，登录后从日志或 `config/wechat_session.json` 里取用户 ID 填入。
@@ -169,6 +176,7 @@ Cookies 不是必需，但会影响清晰度、登录可见内容和解析成功
 | 微博 | `weibo_cookies.txt` |
 | 头条 | `toutiao_cookies.txt` |
 | 小红书 | `xiaohongshu_cookies.txt` |
+| 微信视频号 | `wechat_channels_yuanbao_cookies.txt` |
 
 推荐在浏览器登录平台后导出 Netscape 格式 cookies。示例：
 
@@ -179,6 +187,27 @@ yt-dlp --cookies-from-browser chrome --cookies cookies/bilibili_cookies.txt --si
 也可以用浏览器扩展 `Get cookies.txt LOCALLY` 导出。
 
 不要把 cookies、微信 session、`.env`、日志或下载文件提交到 Git。
+
+## 微信视频号
+
+当前可验证的 NAS 方案是：在微信里复制视频号的 `https://weixin.qq.com/sph/...` 分享短链发给机器人。不要转发视频号小卡片，当前 ClawBot 不能稳定接收这类卡片消息，后端拿不到可解析 payload。机器人在容器内直连腾讯元宝解析接口拿到 `token/eid`，再直连腾讯视频号预览接口解析出 `finder.video.qq.com` MP4 地址并下载。
+
+默认不会调用第三方公开解析 API。由于腾讯元宝解析接口需要登录态，请把你自己的元宝 Web cookie 保存到：
+
+```text
+cookies/wechat_channels_yuanbao_cookies.txt
+```
+
+也可以设置环境变量 `WECHAT_CHANNELS_YUANBAO_COOKIE`。这个 cookie 可以是 Netscape cookies.txt，也可以是一行原始 `a=b; c=d` Cookie header。
+
+如果你自建了兼容 `/api/fetch_video_profile` 的解析服务，可以在 `config/savextube.toml` 里显式配置：
+
+```toml
+[wechat_channels]
+resolver_url = "https://your-worker.example.com/api/fetch_video_profile"
+```
+
+视频号入口只按复制分享链接维护；小卡片不作为可用输入承诺。
 
 ## 抖音视频和图文
 

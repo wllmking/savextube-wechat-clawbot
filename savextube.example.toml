@@ -23,9 +23,9 @@ max_concurrent_downloads = 1
 # 运行中定时重读本配置，新增已登录的 [[wechat.bots]] 会自动启动。
 config_reload_interval = 15
 
-# 默认只支持这些平台：抖音、快手、微博、头条视频、小红书、B站。
+# 默认只支持这些平台：抖音、快手、微博、头条视频、小红书、B站、微信视频号。
 # 抖音视频和 /note/ 图文/Live Photo 默认优先走移动分享页解析器。
-supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili"
+supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili,wechat_channels"
 
 # 文件成功通过微信回传后是否删除容器内本地文件。
 # 想保留下载文件就改成 false，文件会留在宿主机 ./downloads。
@@ -46,6 +46,14 @@ cleanup_after_send = true
 
 [proxy]
 # proxy_host = "http://192.168.2.1:7890"
+
+[wechat_channels]
+# 默认不接第三方 API。视频号 sph 分享链接会由容器本地直连腾讯接口解析。
+# 需要把自己的元宝 Web cookie 保存到 cookies/wechat_channels_yuanbao_cookies.txt，
+# 或设置环境变量 WECHAT_CHANNELS_YUANBAO_COOKIE。
+#
+# 如果你自建了解析服务，才显式设置：
+# resolver_url = "https://your-worker.example.com/api/fetch_video_profile"
 
 [logging]
 log_level = "INFO"

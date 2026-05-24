@@ -8,9 +8,10 @@ import types
 import unittest
 from pathlib import Path
 
-from clawbot_wechat import ClawBotClient, ClawBotError
+from clawbot_wechat import FINDER_FEED_CARD_MARKER, ClawBotClient, ClawBotError
 from douyin_note_downloader import DouyinNoteDownloader, is_douyin_aweme_url, is_douyin_note_url
 from savextube_wechat import _bot_profiles, _collect_result_files, _parse_bool, _resolve_bot_profile
+from wechat_channels_downloader import WeChatChannelsDownloader
 
 sys.modules.setdefault("yt_dlp", types.SimpleNamespace(YoutubeDL=object))
 
@@ -37,6 +38,8 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(urls, ["https://b23.tv/abc123"])
         self.assertEqual(downloader.get_platform_name(urls[0]), "bilibili")
         self.assertEqual(downloader.get_platform_name("https://www.xiaohongshu.com/explore/abc"), "xiaohongshu")
+        self.assertEqual(downloader.get_platform_name("https://weixin.qq.com/sph/Axv548mzBF"), "wechat_channels")
+        self.assertEqual(downloader.extract_urls_from_text("视频号 weixin.qq.com/sph/Axv548mzBF"), ["https://weixin.qq.com/sph/Axv548mzBF"])
         self.assertEqual(
             downloader.normalize_url("https://www.douyin.com/note/7642929016320557382?previous_page=app_code_link", "douyin"),
             "https://www.douyin.com/note/7642929016320557382?previous_page=app_code_link",
@@ -94,6 +97,45 @@ class CoreTests(unittest.TestCase):
             client._json_response("ilink/bot/sendmessage", FakeResponse({"ret": 1, "errmsg": "bad"}))
 
         self.assertEqual(client._json_response("ilink/bot/sendmessage", FakeResponse({"ret": 0})), {"ret": 0})
+
+    def test_clawbot_extracts_sph_from_non_text_card(self):
+        raw = {
+            "message_id": "m1",
+            "from_user_id": "u1",
+            "to_user_id": "bot",
+            "item_list": [
+                {
+                    "type": 99,
+                    "app_item": {"content": "视频号 https://weixin.qq.com/sph/Axv548mzBF"},
+                }
+            ],
+        }
+
+        msg = ClawBotClient.parse_text_message(raw)
+
+        self.assertIsNotNone(msg)
+        self.assertEqual(msg.text, "https://weixin.qq.com/sph/Axv548mzBF")
+
+    def test_clawbot_marks_finder_card_without_sph(self):
+        raw = {
+            "message_id": "m2",
+            "from_user_id": "u1",
+            "to_user_id": "bot",
+            "item_list": [
+                {
+                    "type": 99,
+                    "app_item": {
+                        "content": "<finderFeed><desc><![CDATA[标题]]></desc><objectId>oid</objectId><objectNonceId>nid</objectNonceId></finderFeed>"
+                    },
+                }
+            ],
+        }
+
+        msg = ClawBotClient.parse_text_message(raw)
+
+        self.assertIsNotNone(msg)
+        self.assertIn(FINDER_FEED_CARD_MARKER, msg.text)
+        self.assertIn("object_id=oid", msg.text)
 
     def test_xiaohongshu_extract_note_info_from_detail_map(self):
         downloader = XiaohongshuDownloader()
@@ -161,6 +203,31 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(video_result["success"])
         self.assertEqual(note_result["url"], "https://www.douyin.com/note/123")
         self.assertEqual(video_result["url"], "https://www.douyin.com/video/456")
+
+    def test_wechat_channels_local_resolver_requires_cookie(self):
+        downloader = WeChatChannelsDownloader()
+
+        with self.assertRaises(ValueError) as ctx:
+            downloader.resolve("https://weixin.qq.com/sph/Axv548mzBF")
+
+        self.assertIn("元宝 Web cookie", str(ctx.exception))
+
+    def test_wechat_channels_extracts_h264_url(self):
+        payload = {
+            "data": {
+                "authorInfo": {"nickname": "author"},
+                "feedInfo": {
+                    "description": "title",
+                    "videoUrl": "https://finder.video.qq.com/raw.mp4",
+                    "h264VideoInfo": {"videoUrl": "https://finder.video.qq.com/h264.mp4"},
+                },
+            }
+        }
+
+        feed = WeChatChannelsDownloader._find_feed_payload(payload)
+
+        self.assertIsNotNone(feed)
+        self.assertEqual(WeChatChannelsDownloader._video_url_from_feed(feed["feedInfo"]), "https://finder.video.qq.com/h264.mp4")
 
 
 if __name__ == "__main__":

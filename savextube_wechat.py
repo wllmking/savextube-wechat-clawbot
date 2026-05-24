@@ -30,12 +30,12 @@ import requests
 
 os.environ.setdefault("SAVEXTUBE_WECHAT_ONLY", "1")
 
-from clawbot_wechat import ClawBotClient, ClawBotError, WeChatInboundMessage  # noqa: E402
+from clawbot_wechat import FINDER_FEED_CARD_MARKER, ClawBotClient, ClawBotError, WeChatInboundMessage  # noqa: E402
 from config_reader import get_proxy_config, load_toml_config  # noqa: E402
 
 logger = logging.getLogger("savextube.wechat_runner")
 
-DEFAULT_SUPPORTED_PLATFORMS = {"douyin", "kuaishou", "weibo", "toutiao", "xiaohongshu", "bilibili"}
+DEFAULT_SUPPORTED_PLATFORMS = {"douyin", "kuaishou", "weibo", "toutiao", "xiaohongshu", "bilibili", "wechat_channels"}
 VIDEO_SUFFIXES = {".mp4", ".m4v", ".mov", ".mkv", ".webm", ".flv", ".avi", ".ts"}
 MAX_REMEMBERED_MESSAGES = 1000
 FILE_MTIME_TOLERANCE_SECONDS = 1.0
@@ -239,6 +239,12 @@ def _format_download_error(platform: str, error: str) -> str:
             "下载失败：抖音要求刷新 cookies。\n"
             "这个链接已经识别为抖音视频，但当前 douyin_cookies.txt 不够新，"
             "需要重新从已打开抖音的浏览器导出 cookies 后再试。"
+        )
+    if platform == "wechat_channels" and ("元宝 Web cookie" in error or "HTTP 401" in error):
+        return (
+            "下载失败：微信视频号本地解析需要你自己的元宝 Web cookie。\n"
+            "请把元宝网页 cookie 保存到 cookies/wechat_channels_yuanbao_cookies.txt "
+            "后重试；机器人默认不会使用第三方解析 API。"
         )
     return f"下载失败：{error or '未知错误'}"
 
@@ -566,7 +572,7 @@ class WeChatSaveXTubeBot:
         if platform not in self.supported_platforms:
             await self.send_text(
                 msg,
-                "暂只支持这些平台：抖音、快手、微博、头条视频、小红书、B站。\n"
+                "暂只支持这些平台：抖音、快手、微博、头条视频、小红书、B站、微信视频号。\n"
                 f"当前识别为：{platform}",
             )
             return
@@ -692,7 +698,7 @@ class WeChatSaveXTubeBot:
         if lowered in {"/help", "help", "帮助"}:
             await self.send_text(
                 msg,
-                "发送抖音、快手、微博、头条、小红书或 B站视频链接即可下载，并以微信文件形式回传。\n"
+                "发送抖音、快手、微博、头条、小红书、B站或微信视频号链接即可下载，并以微信文件形式回传。\n"
                 "可用命令：/status 查看状态，/help 查看帮助。",
             )
             return
@@ -701,16 +707,23 @@ class WeChatSaveXTubeBot:
                 msg,
                 f"SaveXTube 微信版运行中。\n"
                 f"ClawBot：{self.bot_name}\n"
-                f"支持平台：抖音、快手、微博、头条视频、小红书、B站。\n"
+                f"支持平台：抖音、快手、微博、头条视频、小红书、B站、微信视频号。\n"
                 f"下载目录：{self.downloader.download_path}\n"
                 f"并发下载：{self.max_concurrent_downloads}\n"
                 f"本地文件：{'发送成功后删除' if self.cleanup_after_send else '发送成功后保留'}",
             )
             return
+        if FINDER_FEED_CARD_MARKER in text:
+            await self.send_text(
+                msg,
+                "微信视频号需要发送 `https://weixin.qq.com/sph/...` 分享短链。\n"
+                "当前 ClawBot 不能稳定接收视频号小卡片；请在视频号里复制链接后发给我。",
+            )
+            return
 
         url = _extract_first_url(text, self.downloader)
         if not url:
-            await self.send_text(msg, "请发送一个有效链接。")
+            await self.send_text(msg, "请发送一个有效链接。视频号需要复制 `https://weixin.qq.com/sph/...` 分享短链，不要转发小卡片。")
             return
         if self.download_semaphore.locked():
             await self.send_text(msg, "当前已有下载任务在运行，本次请求已加入队列。")
@@ -752,6 +765,10 @@ def _build_downloader(config: Dict[str, Any]) -> Any:
     proxy_host = proxy_config.get("proxy_host") or os.getenv("PROXY_HOST", "")
     if proxy_host:
         os.environ["PROXY_HOST"] = proxy_host
+    channels_config = config.get("wechat_channels") or {}
+    resolver_url = str(channels_config.get("resolver_url") or "").strip()
+    if resolver_url and not os.getenv("WECHAT_CHANNELS_RESOLVER_URL"):
+        os.environ["WECHAT_CHANNELS_RESOLVER_URL"] = resolver_url
 
     download_path = os.getenv("DOWNLOAD_PATH", "/downloads")
     cookies_base = os.getenv("COOKIES_PATH", "/app/cookies")

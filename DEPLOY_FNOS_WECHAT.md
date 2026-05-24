@@ -8,7 +8,7 @@
 
 一个容器可以同时运行多个 ClawBot session。每个 ClawBot 独立扫码登录，消息从各自 ClawBot 回传，不会串到另一个微信账号。
 
-默认支持平台只保留：抖音、快手、微博、头条视频、小红书、B站。其中抖音支持视频和图文/Live Photo 笔记。
+默认支持平台只保留：抖音、快手、微博、头条视频、小红书、B站、微信视频号。其中抖音支持视频和图文/Live Photo 笔记。
 
 ## 目录
 
@@ -52,7 +52,7 @@ progress_interval = 20
 max_send_files = 20
 max_concurrent_downloads = 1
 config_reload_interval = 15
-supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili"
+supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili,wechat_channels"
 cleanup_after_send = true
 ```
 
@@ -133,7 +133,7 @@ docker logs -f savextube-wechat
 
 ## 使用
 
-在微信里给 ClawBot 发抖音、快手、微博、头条视频、小红书或 B站链接：
+在微信里给 ClawBot 发抖音、快手、微博、头条视频、小红书、B站或微信视频号链接：
 
 ```text
 https://www.bilibili.com/video/BVxxxxxxxxxx
@@ -156,9 +156,12 @@ cookies/kuaishou_cookies.txt
 cookies/xiaohongshu_cookies.txt
 cookies/weibo_cookies.txt
 cookies/toutiao_cookies.txt
+cookies/wechat_channels_yuanbao_cookies.txt
 ```
 
 B站未登录时经常只能拿到 360P/480P。普通登录通常可拿 720P/1080P；高码率、4K、HDR 仍取决于大会员和视频源本身。
+
+微信视频号的稳定入口是 `https://weixin.qq.com/sph/...` 分享短链。不要转发视频号小卡片，当前 ClawBot 不能稳定接收这类卡片消息，后端拿不到可解析 payload。默认不接第三方公开解析 API，容器会本地直连腾讯元宝和视频号接口解析；因此需要把自己的元宝 Web cookie 放到 `cookies/wechat_channels_yuanbao_cookies.txt`，或设置 `WECHAT_CHANNELS_YUANBAO_COOKIE`。如果自建了解析服务，可以在 `config/savextube.toml` 里显式配置 `[wechat_channels].resolver_url`。
 
 ## 注意
 
