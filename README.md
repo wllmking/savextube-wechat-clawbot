@@ -2,7 +2,7 @@
 
 微信 ClawBot 专用的视频下载机器人。用户在微信里给 ClawBot 发送视频链接，机器人下载后通过微信回传可播放的视频文件，发送成功后默认删除容器内本地文件，也可以配置为保留到本地 `downloads/`。
 
-这个仓库是面向 NAS 自用部署的精简版，只保留微信入口和常用中文视频平台，不包含其他聊天机器人入口。
+这个仓库是面向 NAS 自用部署的精简版，只保留微信入口和常用中文视频平台，不包含其他聊天机器人入口。一个容器可以同时运行多个 ClawBot session，适合家庭成员分别绑定自己的微信 ClawBot。
 
 ## 支持平台
 
@@ -18,6 +18,7 @@
 ## 功能特点
 
 - 微信 ClawBot 扫码登录、轮询收消息、发送文本进度、上传并回传媒体文件。
+- 支持单容器多 ClawBot session；每个 ClawBot 独立扫码登录，回传消息互不串号。
 - 下载完成后通过 ClawBot CDN 以微信视频消息发送，手机微信更容易直接播放。
 - 抖音视频和图文/Live Photo 会优先走移动分享页解析，减少 yt-dlp web 接口的 cookies/风控失败。
 - 抖音图文/Live Photo 笔记会优先合成 H.264/AAC MP4；只有静态图片时回传图片文件。
@@ -31,7 +32,7 @@
 
 ```text
 微信消息
-  -> ClawBot getupdates
+  -> 一个或多个 ClawBot getupdates
   -> 识别链接和平台
   -> yt-dlp / 抖音移动分享页解析器 / 小红书备用解析器下载
   -> ffmpeg 快速整理或必要时转码为微信可播放 MP4
@@ -120,6 +121,35 @@ cleanup_after_send = false
 ```
 
 保留后文件会留在宿主机 `downloads/` 目录，后续需要手动清理。
+
+## 多 ClawBot
+
+如果要给多个人分别使用各自的微信 ClawBot，可以在同一个容器里配置多个 bot profile：
+
+```toml
+[wechat]
+max_concurrent_downloads = 1
+
+[[wechat.bots]]
+name = "me"
+enabled = true
+session_file = "/app/config/wechat_me.json"
+
+[[wechat.bots]]
+name = "wife"
+enabled = true
+session_file = "/app/config/wechat_wife.json"
+```
+
+分别扫码登录：
+
+```bash
+docker compose run --rm savextube-wechat login --bot me
+docker compose run --rm savextube-wechat login --bot wife
+docker compose up -d
+```
+
+`run` 会启动所有 `enabled = true` 的 bot。多个 bot 共享同一个下载队列，`max_concurrent_downloads = 1` 时同一时间只跑一个下载任务，避免 NAS 同时转码过载。
 
 ## Cookies
 

@@ -10,7 +10,7 @@ from pathlib import Path
 
 from clawbot_wechat import ClawBotClient, ClawBotError
 from douyin_note_downloader import DouyinNoteDownloader, is_douyin_aweme_url, is_douyin_note_url
-from savextube_wechat import _collect_result_files, _parse_bool
+from savextube_wechat import _bot_profiles, _collect_result_files, _parse_bool, _resolve_bot_profile
 
 sys.modules.setdefault("yt_dlp", types.SimpleNamespace(YoutubeDL=object))
 
@@ -65,6 +65,27 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(_parse_bool(False, default=True))
         self.assertFalse(_parse_bool("false", default=True))
         self.assertTrue(_parse_bool("", default=True))
+
+    def test_multi_clawbot_profiles_do_not_share_session_file(self):
+        config = {
+            "wechat": {
+                "session_file": "/app/config/wechat_session.json",
+                "progress_interval": 5,
+                "bots": [
+                    {"name": "me", "session_file": "/app/config/wechat_me.json"},
+                    {"name": "wife", "enabled": False},
+                ],
+            }
+        }
+
+        active_profiles = _bot_profiles(config)
+        all_profiles = _bot_profiles(config, include_disabled=True)
+
+        self.assertEqual([profile["name"] for profile in active_profiles], ["me"])
+        self.assertEqual(all_profiles[0]["session_file"], "/app/config/wechat_me.json")
+        self.assertEqual(all_profiles[1]["session_file"], "/app/config/wechat_wife.json")
+        self.assertEqual(all_profiles[1]["progress_interval"], 5)
+        self.assertEqual(_resolve_bot_profile(config, "wife")["name"], "wife")
 
     def test_clawbot_json_response_rejects_business_error(self):
         client = ClawBotClient(session_path="/tmp/unused.json", token="token")

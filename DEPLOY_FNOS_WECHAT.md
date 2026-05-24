@@ -6,6 +6,8 @@
 
 用户给微信机器人发链接后，容器会下载到 `/downloads`，再通过 ClawBot 的 `getuploadurl` + CDN 上传 + `sendmessage` 以微信视频消息回传。文件成功回传后，默认会删除容器里的本地下载文件；如果要留档，可以配置为保留到宿主机 `downloads/`。
 
+一个容器可以同时运行多个 ClawBot session。每个 ClawBot 独立扫码登录，消息从各自 ClawBot 回传，不会串到另一个微信账号。
+
 默认支持平台只保留：抖音、快手、微博、头条视频、小红书、B站。其中抖音支持视频和图文/Live Photo 笔记。
 
 ## 目录
@@ -82,6 +84,34 @@ docker compose run --rm savextube-wechat login
 ```bash
 config/wechat_session.json
 ```
+
+## 多 ClawBot
+
+在 `config/savextube.toml` 里添加多个 bot profile：
+
+```toml
+[wechat]
+max_concurrent_downloads = 1
+
+[[wechat.bots]]
+name = "me"
+enabled = true
+session_file = "/app/config/wechat_me.json"
+
+[[wechat.bots]]
+name = "wife"
+enabled = true
+session_file = "/app/config/wechat_wife.json"
+```
+
+分别扫码登录：
+
+```bash
+docker compose run --rm savextube-wechat login --bot me
+docker compose run --rm savextube-wechat login --bot wife
+```
+
+启动后会同时轮询所有 `enabled = true` 的 ClawBot，并共享一个下载队列。
 
 ## 启动
 

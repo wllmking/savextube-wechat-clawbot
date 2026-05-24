@@ -28,6 +28,19 @@ supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili"
 # 想保留下载文件就改成 false，文件会留在宿主机 ./downloads。
 cleanup_after_send = true
 
+# 可选：单容器同时运行多个 ClawBot。
+# 配了 [[wechat.bots]] 后，run 会启动所有 enabled=true 的 bot。
+# login 时用：python3 savextube_wechat.py login --bot me
+# [[wechat.bots]]
+# name = "me"
+# enabled = true
+# session_file = "/app/config/wechat_me.json"
+#
+# [[wechat.bots]]
+# name = "wife"
+# enabled = false
+# session_file = "/app/config/wechat_wife.json"
+
 [proxy]
 # proxy_host = "http://192.168.2.1:7890"
 

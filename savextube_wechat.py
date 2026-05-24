@@ -4,6 +4,7 @@
 
 Run modes:
   python3 savextube_wechat.py login
+  python3 savextube_wechat.py login --bot wife
   python3 savextube_wechat.py run
 """
 
@@ -38,6 +39,7 @@ DEFAULT_SUPPORTED_PLATFORMS = {"douyin", "kuaishou", "weibo", "toutiao", "xiaoho
 VIDEO_SUFFIXES = {".mp4", ".m4v", ".mov", ".mkv", ".webm", ".flv", ".avi", ".ts"}
 MAX_REMEMBERED_MESSAGES = 1000
 FILE_MTIME_TOLERANCE_SECONDS = 1.0
+BOT_INHERIT_EXCLUDE_KEYS = {"bots", "enabled", "name", "session_file", "token"}
 
 
 def _first_existing_config_path() -> str:
@@ -124,6 +126,63 @@ def _parse_float(value: Any, default: float, minimum: float = 0.0) -> float:
         return max(minimum, float(value))
     except (TypeError, ValueError):
         return default
+
+
+def _safe_bot_name(name: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", name or "").strip("._-")
+    return cleaned[:64] or "default"
+
+
+def _default_session_file(bot_name: str, multi_bot: bool = False) -> str:
+    if not multi_bot and bot_name == "default":
+        return os.getenv("WECHAT_SESSION_FILE", "/app/config/wechat_session.json")
+    return f"/app/config/wechat_{_safe_bot_name(bot_name)}.json"
+
+
+def _bot_profiles(config: Dict[str, Any], include_disabled: bool = False) -> List[Dict[str, Any]]:
+    wechat = config.get("wechat") or {}
+    raw_bots = wechat.get("bots") or []
+    if not raw_bots:
+        profile = dict(wechat)
+        profile["name"] = str(profile.get("name") or os.getenv("WECHAT_BOT_NAME", "default"))
+        profile["session_file"] = str(profile.get("session_file") or _default_session_file(profile["name"]))
+        return [profile]
+
+    inherited = {key: value for key, value in wechat.items() if key not in BOT_INHERIT_EXCLUDE_KEYS}
+    profiles: List[Dict[str, Any]] = []
+    for index, raw_profile in enumerate(raw_bots, start=1):
+        if not isinstance(raw_profile, dict):
+            continue
+        profile = {**inherited, **raw_profile}
+        profile["name"] = _safe_bot_name(str(profile.get("name") or f"bot{index}"))
+        profile["session_file"] = str(
+            profile.get("session_file")
+            or _default_session_file(profile["name"], multi_bot=True)
+        )
+        if not include_disabled and not _parse_bool(profile.get("enabled"), default=True):
+            continue
+        profiles.append(profile)
+    return profiles
+
+
+def _resolve_bot_profile(config: Dict[str, Any], bot_name: str = "") -> Dict[str, Any]:
+    profiles = _bot_profiles(config, include_disabled=True)
+    if not profiles:
+        raise ClawBotError("没有可用的 ClawBot 配置")
+
+    if bot_name:
+        safe_name = _safe_bot_name(bot_name)
+        for profile in profiles:
+            if profile.get("name") == safe_name:
+                return profile
+        available = ", ".join(str(profile.get("name")) for profile in profiles)
+        raise ClawBotError(f"未找到 ClawBot 配置：{bot_name}。可用配置：{available}")
+
+    if len(profiles) == 1:
+        return profiles[0]
+
+    available = ", ".join(str(profile.get("name")) for profile in profiles)
+    raise ClawBotError(f"配置了多个 ClawBot，请用 --bot 指定一个：{available}")
 
 
 def _extract_first_url(text: str, downloader: Any) -> Optional[str]:
@@ -454,15 +513,24 @@ def _cleanup_empty_parent_dirs(file_path: Path, stop_at: Path) -> None:
 
 
 class WeChatSaveXTubeBot:
-    def __init__(self, client: ClawBotClient, downloader: Any, config: Dict[str, Any]):
+    def __init__(
+        self,
+        client: ClawBotClient,
+        downloader: Any,
+        config: Dict[str, Any],
+        wechat_config: Optional[Dict[str, Any]] = None,
+        bot_name: str = "default",
+        download_semaphore: Optional[asyncio.Semaphore] = None,
+    ):
         self.client = client
         self.downloader = downloader
         self.config = config
+        self.bot_name = bot_name
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.stopping = asyncio.Event()
         self.tasks: set[asyncio.Task[Any]] = set()
 
-        wechat_config = config.get("wechat") or {}
+        wechat_config = wechat_config or config.get("wechat") or {}
         allowed_raw = str(wechat_config.get("allowed_user_ids") or os.getenv("WECHAT_ALLOWED_USER_IDS", ""))
         self.allowed_users = _parse_allowed_users(allowed_raw)
         self.progress_interval = _parse_int(wechat_config.get("progress_interval") or os.getenv("WECHAT_PROGRESS_INTERVAL", "20"), default=20)
@@ -471,7 +539,7 @@ class WeChatSaveXTubeBot:
             wechat_config.get("max_concurrent_downloads") or os.getenv("WECHAT_MAX_CONCURRENT_DOWNLOADS", "1"),
             default=1,
         )
-        self.download_semaphore = asyncio.Semaphore(self.max_concurrent_downloads)
+        self.download_semaphore = download_semaphore or asyncio.Semaphore(self.max_concurrent_downloads)
         self.cleanup_after_send = _parse_bool(
             wechat_config.get("cleanup_after_send") if "cleanup_after_send" in wechat_config else os.getenv("WECHAT_CLEANUP_AFTER_SEND"),
             default=True,
@@ -622,6 +690,7 @@ class WeChatSaveXTubeBot:
             await self.send_text(
                 msg,
                 f"SaveXTube 微信版运行中。\n"
+                f"ClawBot：{self.bot_name}\n"
                 f"支持平台：抖音、快手、微博、头条视频、小红书、B站。\n"
                 f"下载目录：{self.downloader.download_path}\n"
                 f"并发下载：{self.max_concurrent_downloads}\n"
@@ -641,7 +710,7 @@ class WeChatSaveXTubeBot:
     async def run(self) -> None:
         self.loop = asyncio.get_running_loop()
         self.client.notify_start()
-        logger.info("WeChat SaveXTube runner started")
+        logger.info("WeChat SaveXTube runner started: %s", self.bot_name)
         try:
             while not self.stopping.is_set():
                 try:
@@ -649,7 +718,7 @@ class WeChatSaveXTubeBot:
                 except requests.exceptions.ReadTimeout:
                     continue
                 except Exception as exc:
-                    logger.warning("getupdates failed: %s", exc)
+                    logger.warning("getupdates failed for %s: %s", self.bot_name, exc)
                     await asyncio.sleep(5)
                     continue
 
@@ -681,9 +750,9 @@ def _build_downloader(config: Dict[str, Any]) -> Any:
     return WeChatVideoDownloader(download_path, cookies_base, proxy_host)
 
 
-def _build_client(config: Dict[str, Any]) -> ClawBotClient:
-    wechat = config.get("wechat") or {}
-    session_path = str(wechat.get("session_file") or os.getenv("WECHAT_SESSION_FILE", "/app/config/wechat_session.json"))
+def _build_client(config: Dict[str, Any], wechat: Optional[Dict[str, Any]] = None) -> ClawBotClient:
+    wechat = wechat or config.get("wechat") or {}
+    session_path = str(wechat.get("session_file") or _default_session_file(str(wechat.get("name") or "default")))
     client = ClawBotClient(
         session_path=session_path,
         base_url=str(wechat.get("base_url") or os.getenv("WECHAT_BASE_URL", "https://ilinkai.weixin.qq.com")),
@@ -698,23 +767,54 @@ def _build_client(config: Dict[str, Any]) -> ClawBotClient:
     return client
 
 
+def _shared_download_semaphore(config: Dict[str, Any], profiles: Sequence[Dict[str, Any]]) -> asyncio.Semaphore:
+    wechat = config.get("wechat") or {}
+    raw = wechat.get("max_concurrent_downloads") or os.getenv("WECHAT_MAX_CONCURRENT_DOWNLOADS", "1")
+    if not raw and profiles:
+        raw = profiles[0].get("max_concurrent_downloads")
+    return asyncio.Semaphore(_parse_int(raw, default=1))
+
+
 async def _run_bot(config: Optional[Dict[str, Any]] = None) -> None:
     if config is None:
         config = _load_config()
         _configure_logging(config)
-    client = _build_client(config)
-    if not client.configured:
-        raise ClawBotError("微信未登录。请先执行：python3 savextube_wechat.py login")
+    profiles = _bot_profiles(config)
+    if not profiles:
+        raise ClawBotError("没有启用的 ClawBot 配置。请检查 [[wechat.bots]] 的 enabled 设置。")
+
     downloader = _build_downloader(config)
-    bot = WeChatSaveXTubeBot(client, downloader, config)
+    shared_semaphore = _shared_download_semaphore(config, profiles)
+    bots: List[WeChatSaveXTubeBot] = []
+    for profile in profiles:
+        client = _build_client(config, profile)
+        if not client.configured:
+            bot_name = profile.get("name") or "default"
+            raise ClawBotError(f"ClawBot {bot_name} 未登录。请先执行：python3 savextube_wechat.py login --bot {bot_name}")
+        bots.append(
+            WeChatSaveXTubeBot(
+                client,
+                downloader,
+                config,
+                wechat_config=profile,
+                bot_name=str(profile.get("name") or "default"),
+                download_semaphore=shared_semaphore,
+            )
+        )
 
     loop = asyncio.get_running_loop()
+
+    def stop_all() -> None:
+        for bot in bots:
+            bot.stopping.set()
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            loop.add_signal_handler(sig, bot.stopping.set)
+            loop.add_signal_handler(sig, stop_all)
         except NotImplementedError:
             pass
-    await bot.run()
+
+    await asyncio.gather(*(bot.run() for bot in bots))
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
@@ -722,13 +822,15 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     login_parser = sub.add_parser("login", help="scan QR and save WeChat ClawBot session")
     login_parser.add_argument("--timeout", type=int, default=480)
+    login_parser.add_argument("--bot", default="", help="bot name from [[wechat.bots]]")
     sub.add_parser("run", help="run WeChat-only downloader")
     args = parser.parse_args(argv)
 
     config = _load_config()
     _configure_logging(config)
     if args.command == "login":
-        client = _build_client(config)
+        profile = _resolve_bot_profile(config, args.bot)
+        client = _build_client(config, profile)
         client.login_with_qr(timeout_seconds=args.timeout)
         return
     if args.command == "run":
