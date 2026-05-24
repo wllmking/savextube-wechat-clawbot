@@ -105,6 +105,7 @@ allowed_user_ids = ""
 progress_interval = 20
 max_send_files = 20
 max_concurrent_downloads = 1
+config_reload_interval = 15
 supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili"
 cleanup_after_send = true
 
@@ -129,11 +130,12 @@ cleanup_after_send = false
 ```toml
 [wechat]
 max_concurrent_downloads = 1
+config_reload_interval = 15
 
 [[wechat.bots]]
 name = "me"
 enabled = true
-session_file = "/app/config/wechat_me.json"
+session_file = "/app/config/wechat_session.json"
 
 [[wechat.bots]]
 name = "wife"
@@ -149,7 +151,11 @@ docker compose run --rm savextube-wechat login --bot wife
 docker compose up -d
 ```
 
-`run` 会启动所有 `enabled = true` 的 bot。多个 bot 共享同一个下载队列，`max_concurrent_downloads = 1` 时同一时间只跑一个下载任务，避免 NAS 同时转码过载。
+`run` 会启动所有 `enabled = true` 且已登录的 bot。运行中会按 `config_reload_interval` 定时重读 `savextube.toml`，新增 profile 并完成扫码登录后会自动启动，不需要重建镜像，也不需要重启当前 bot。
+
+已有单 bot 登录不会丢。把第一个 profile 的 `session_file` 指向原来的 `/app/config/wechat_session.json`，就会继续使用原登录态；如果改成 `/app/config/wechat_me.json`，则需要重新扫码或手动复制原 session 文件。
+
+多个 bot 共享同一个下载队列，`max_concurrent_downloads = 1` 时同一时间只跑一个下载任务，避免 NAS 同时转码过载。
 
 ## Cookies
 

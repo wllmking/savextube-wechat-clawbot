@@ -40,6 +40,7 @@ VIDEO_SUFFIXES = {".mp4", ".m4v", ".mov", ".mkv", ".webm", ".flv", ".avi", ".ts"
 MAX_REMEMBERED_MESSAGES = 1000
 FILE_MTIME_TOLERANCE_SECONDS = 1.0
 BOT_INHERIT_EXCLUDE_KEYS = {"bots", "enabled", "name", "session_file", "token"}
+PENDING_LOGIN_WARNED: set[str] = set()
 
 
 def _first_existing_config_path() -> str:
@@ -775,38 +776,123 @@ def _shared_download_semaphore(config: Dict[str, Any], profiles: Sequence[Dict[s
     return asyncio.Semaphore(_parse_int(raw, default=1))
 
 
+def _config_reload_interval(config: Dict[str, Any]) -> int:
+    wechat = config.get("wechat") or {}
+    return _parse_int(
+        wechat.get("config_reload_interval") or os.getenv("WECHAT_CONFIG_RELOAD_INTERVAL", "15"),
+        default=15,
+    )
+
+
+def _running_bot_session_file(record: Dict[str, Any]) -> str:
+    return str(record.get("session_file") or "")
+
+
+async def _stop_running_bot(name: str, record: Dict[str, Any]) -> None:
+    bot = record.get("bot")
+    task = record.get("task")
+    if bot:
+        bot.stopping.set()
+    if isinstance(task, asyncio.Task):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning("ClawBot %s stopped with error: %s", name, exc)
+
+
+async def _start_profile_bot(
+    config: Dict[str, Any],
+    profile: Dict[str, Any],
+    downloader: Any,
+    shared_semaphore: asyncio.Semaphore,
+) -> Optional[Dict[str, Any]]:
+    bot_name = str(profile.get("name") or "default")
+    client = _build_client(config, profile)
+    if not client.configured:
+        if bot_name not in PENDING_LOGIN_WARNED:
+            logger.warning(
+                "ClawBot %s not logged in yet; waiting for session file: %s",
+                bot_name,
+                profile.get("session_file"),
+            )
+            PENDING_LOGIN_WARNED.add(bot_name)
+        return None
+
+    PENDING_LOGIN_WARNED.discard(bot_name)
+    bot = WeChatSaveXTubeBot(
+        client,
+        downloader,
+        config,
+        wechat_config=profile,
+        bot_name=bot_name,
+        download_semaphore=shared_semaphore,
+    )
+    task = asyncio.create_task(bot.run(), name=f"savextube-wechat-{bot_name}")
+    logger.info("ClawBot profile started: %s", bot_name)
+    return {
+        "bot": bot,
+        "task": task,
+        "session_file": str(profile.get("session_file") or ""),
+    }
+
+
+async def _reconcile_bots(
+    config: Dict[str, Any],
+    downloader: Any,
+    shared_semaphore: asyncio.Semaphore,
+    running: Dict[str, Dict[str, Any]],
+) -> None:
+    profiles = _bot_profiles(config)
+    desired = {str(profile.get("name") or "default"): profile for profile in profiles}
+
+    for name, record in list(running.items()):
+        profile = desired.get(name)
+        task = record.get("task")
+        if isinstance(task, asyncio.Task) and task.done():
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.warning("ClawBot profile exited unexpectedly: %s: %s", name, exc)
+            running.pop(name, None)
+            continue
+        if not profile or str(profile.get("session_file") or "") != _running_bot_session_file(record):
+            logger.info("ClawBot profile stopped: %s", name)
+            running.pop(name, None)
+            await _stop_running_bot(name, record)
+
+    for name, profile in desired.items():
+        if name in running:
+            continue
+        record = await _start_profile_bot(config, profile, downloader, shared_semaphore)
+        if record:
+            running[name] = record
+
+
 async def _run_bot(config: Optional[Dict[str, Any]] = None) -> None:
     if config is None:
         config = _load_config()
         _configure_logging(config)
-    profiles = _bot_profiles(config)
-    if not profiles:
-        raise ClawBotError("没有启用的 ClawBot 配置。请检查 [[wechat.bots]] 的 enabled 设置。")
 
+    config_path = _first_existing_config_path()
     downloader = _build_downloader(config)
+    profiles = _bot_profiles(config)
     shared_semaphore = _shared_download_semaphore(config, profiles)
-    bots: List[WeChatSaveXTubeBot] = []
-    for profile in profiles:
-        client = _build_client(config, profile)
-        if not client.configured:
-            bot_name = profile.get("name") or "default"
-            raise ClawBotError(f"ClawBot {bot_name} 未登录。请先执行：python3 savextube_wechat.py login --bot {bot_name}")
-        bots.append(
-            WeChatSaveXTubeBot(
-                client,
-                downloader,
-                config,
-                wechat_config=profile,
-                bot_name=str(profile.get("name") or "default"),
-                download_semaphore=shared_semaphore,
-            )
-        )
+    running: Dict[str, Dict[str, Any]] = {}
+    stopping = asyncio.Event()
 
     loop = asyncio.get_running_loop()
 
     def stop_all() -> None:
-        for bot in bots:
-            bot.stopping.set()
+        stopping.set()
+        for record in running.values():
+            bot = record.get("bot")
+            if bot:
+                bot.stopping.set()
 
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -814,7 +900,27 @@ async def _run_bot(config: Optional[Dict[str, Any]] = None) -> None:
         except NotImplementedError:
             pass
 
-    await asyncio.gather(*(bot.run() for bot in bots))
+    reload_interval = _config_reload_interval(config)
+    await _reconcile_bots(config, downloader, shared_semaphore, running)
+    logger.info("config hot reload enabled: %ss", reload_interval)
+
+    try:
+        while not stopping.is_set():
+            try:
+                await asyncio.wait_for(stopping.wait(), timeout=reload_interval)
+                break
+            except asyncio.TimeoutError:
+                pass
+
+            latest_config = load_toml_config(config_path) if Path(config_path).exists() else config
+            if latest_config:
+                config = latest_config
+            await _reconcile_bots(config, downloader, shared_semaphore, running)
+    finally:
+        await asyncio.gather(
+            *(_stop_running_bot(name, record) for name, record in list(running.items())),
+            return_exceptions=True,
+        )
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:

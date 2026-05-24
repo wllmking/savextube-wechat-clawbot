@@ -20,6 +20,9 @@ max_send_files = 20
 # 同时处理多少个下载任务。NAS 上建议 1；性能更强时可改 2。
 max_concurrent_downloads = 1
 
+# 运行中定时重读本配置，新增已登录的 [[wechat.bots]] 会自动启动。
+config_reload_interval = 15
+
 # 默认只支持这些平台：抖音、快手、微博、头条视频、小红书、B站。
 # 抖音视频和 /note/ 图文/Live Photo 默认优先走移动分享页解析器。
 supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili"

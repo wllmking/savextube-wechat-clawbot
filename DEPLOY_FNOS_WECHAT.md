@@ -51,6 +51,7 @@ allowed_user_ids = ""
 progress_interval = 20
 max_send_files = 20
 max_concurrent_downloads = 1
+config_reload_interval = 15
 supported_platforms = "douyin,kuaishou,weibo,toutiao,xiaohongshu,bilibili"
 cleanup_after_send = true
 ```
@@ -92,11 +93,12 @@ config/wechat_session.json
 ```toml
 [wechat]
 max_concurrent_downloads = 1
+config_reload_interval = 15
 
 [[wechat.bots]]
 name = "me"
 enabled = true
-session_file = "/app/config/wechat_me.json"
+session_file = "/app/config/wechat_session.json"
 
 [[wechat.bots]]
 name = "wife"
@@ -112,6 +114,8 @@ docker compose run --rm savextube-wechat login --bot wife
 ```
 
 启动后会同时轮询所有 `enabled = true` 的 ClawBot，并共享一个下载队列。
+
+运行中会按 `config_reload_interval` 定时重读配置。新增 profile 并扫码登录后，会自动启动新增 ClawBot，不需要重建镜像，也不影响原来的 `wechat_session.json` 登录态。
 
 ## 启动
 
