@@ -223,12 +223,12 @@ def _format_progress(data: Dict[str, Any]) -> Optional[str]:
         return (
             f"下载中：{filename}\n"
             f"进度：{percent:.1f}%\n"
-            f"大小：{_format_bytes(downloaded)} / {_format_bytes(total)}\n"
+            f"原始下载：{_format_bytes(downloaded)} / {_format_bytes(total)}\n"
             f"速度：{_format_bytes(speed)}/s"
         )
     return (
         f"下载中：{filename}\n"
-        f"已下载：{_format_bytes(downloaded)}\n"
+        f"原始已下载：{_format_bytes(downloaded)}\n"
         f"速度：{_format_bytes(speed)}/s"
     )
 
@@ -629,10 +629,19 @@ class WeChatSaveXTubeBot:
         temp_files: List[Path] = []
         for file_path in files[: self.max_send_files]:
             try:
+                original_size = file_path.stat().st_size
                 send_path, prepared_temps = await asyncio.to_thread(_prepare_wechat_video_file, file_path)
                 temp_files.extend(prepared_temps)
-                size = _format_bytes(send_path.stat().st_size)
-                await self.send_file(msg, send_path, f"发送视频：{send_path.name}\n大小：{size}")
+                send_size = send_path.stat().st_size
+                if send_path.resolve() != file_path.resolve() or send_size != original_size:
+                    send_text = (
+                        f"发送视频（微信可播放版）：{send_path.name}\n"
+                        f"原始文件：{_format_bytes(original_size)}\n"
+                        f"发送文件：{_format_bytes(send_size)}"
+                    )
+                else:
+                    send_text = f"发送视频：{send_path.name}\n文件大小：{_format_bytes(send_size)}"
+                await self.send_file(msg, send_path, send_text)
                 sent += 1
                 sent_files.append(file_path)
             except Exception as exc:
