@@ -98,6 +98,27 @@ class CoreTests(unittest.TestCase):
 
         self.assertEqual(client._json_response("ilink/bot/sendmessage", FakeResponse({"ret": 0})), {"ret": 0})
 
+    def test_clawbot_video_send_falls_back_to_file_send(self):
+        client = ClawBotClient(session_path="/tmp/unused.json", token="token")
+        calls = []
+
+        def fail_video(to_user_id, file_path, text="", context_token=None):
+            calls.append(("video", to_user_id, file_path, text, context_token))
+            raise ClawBotError("CDN upload failed: 500")
+
+        def send_file(to_user_id, file_path, text="", context_token=None):
+            calls.append(("file", to_user_id, file_path, text, context_token))
+            return "fallback-file-id"
+
+        client.send_video = fail_video
+        client.send_file = send_file
+
+        result = client.send_media("user", "/tmp/demo.mp4", "sending", "ctx")
+
+        self.assertEqual(result, "fallback-file-id")
+        self.assertEqual(calls[0], ("video", "user", "/tmp/demo.mp4", "sending", "ctx"))
+        self.assertEqual(calls[1], ("file", "user", "/tmp/demo.mp4", "", "ctx"))
+
     def test_clawbot_extracts_sph_from_non_text_card(self):
         raw = {
             "message_id": "m1",

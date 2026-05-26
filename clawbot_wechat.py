@@ -677,5 +677,9 @@ class ClawBotClient:
     ) -> str:
         mime_type = mimetypes.guess_type(file_path)[0] or ""
         if mime_type.startswith("video/"):
-            return self.send_video(to_user_id, file_path, text, context_token)
+            try:
+                return self.send_video(to_user_id, file_path, text, context_token)
+            except ClawBotError as exc:
+                logger.warning("video message send failed, falling back to file send: %s", exc)
+                return self.send_file(to_user_id, file_path, "", context_token)
         return self.send_file(to_user_id, file_path, text, context_token)

@@ -301,7 +301,6 @@ def _prepare_wechat_video_file(path: Path) -> tuple[Path, List[Path]]:
     video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), {})
     audio_streams = [stream for stream in streams if stream.get("codec_type") == "audio"]
     video_codec = str(video_stream.get("codec_name") or "").lower()
-    audio_codecs = {str(stream.get("codec_name") or "").lower() for stream in audio_streams}
     format_name = str((probe.get("format") or {}).get("format_name") or "").lower()
     pix_fmt = str(video_stream.get("pix_fmt") or "").lower()
 
@@ -313,7 +312,11 @@ def _prepare_wechat_video_file(path: Path) -> tuple[Path, List[Path]]:
 
     compatible_mp4 = "mp4" in format_name or "mov" in format_name
     compatible_video = video_codec == "h264" and pix_fmt in {"", "yuv420p"}
-    compatible_audio = bool(audio_streams) and audio_codecs.issubset({"aac"})
+    compatible_audio = bool(audio_streams) and all(
+        str(stream.get("codec_name") or "").lower() == "aac"
+        and str(stream.get("profile") or "").strip().lower() in {"", "lc"}
+        for stream in audio_streams
+    )
 
     if not force_transcode and compatible_mp4 and compatible_video and compatible_audio:
         cmd = [
@@ -335,6 +338,30 @@ def _prepare_wechat_video_file(path: Path) -> tuple[Path, List[Path]]:
             str(output),
         ]
         mode = "remux"
+    elif not force_transcode and compatible_mp4 and compatible_video and audio_streams:
+        cmd = [
+            ffmpeg,
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(path),
+            "-map",
+            "0:v:0",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "copy",
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-movflags",
+            "+faststart",
+            str(output),
+        ]
+        mode = "transcode_audio"
     elif audio_streams:
         cmd = [
             ffmpeg,
