@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>SaveBTube 仪表盘</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="dashboard-page">
+  <aside class="sidebar">
+    <div class="brand">SaveBTube</div>
+    <nav>
+      <button data-target="dashboard" class="nav-item active">首页</button>
+      <button data-target="downloads" class="nav-item">下载</button>
+      <button data-target="history" class="nav-item">历史</button>
+      <button data-target="logs" class="nav-item">日志</button>
+      <button data-target="settings" class="nav-item">设置</button>
+    </nav>
+  </aside>
+  <main class="main-content">
+    <header class="topbar">
+      <div class="search-box">
+        <form id="downloadForm" class="search-box" style="width:100%; display:flex; gap:12px;">
+          <input id="url" name="url" placeholder="输入下载链接..." required />
+          <button id="submitDownload" type="submit" class="button primary">立即下载</button>
+        </form>
+      </div>
+      <div class="topbar-actions">
+        <span class="badge">admin</span>
+        <a href="/logout" class="button secondary">退出</a>
+      </div>
+    </header>
+    <section id="home" class="page active">
+      <div class="grid-two">
+        <div class="card stats-card">
+          <div class="card-title">总下载次数</div>
+          <div class="card-value" id="statTotal">0</div>
+        </div>
+        <div class="card stats-card">
+          <div class="card-title">成功下载</div>
+          <div class="card-value" id="statSuccess">0</div>
+        </div>
+        <div class="card stats-card">
+          <div class="card-title">失败记录</div>
+          <div class="card-value" id="statFailed">0</div>
+        </div>
+        <div class="card stats-card">
+          <div class="card-title">累计下载量</div>
+          <div class="card-value" id="statSize">0 B</div>
+        </div>
+      </div>
+      <div class="card chart-card">
+        <div class="card-title">最近 30 天下载趋势</div>
+        <pre id="trendChart">加载中...</pre>
+      </div>
+      <div class="grid-two">
+        <div class="card table-card">
+          <div class="card-title">平台分布</div>
+          <div id="platformDistribution">加载中...</div>
+        </div>
+        <div class="card table-card">
+          <div class="card-title">下载统计</div>
+          <div class="download-summary">视频: <span id="countVideo">0</span></div>
+          <div class="download-summary">音频: <span id="countAudio">0</span></div>
+          <div class="download-summary">图片: <span id="countImage">0</span></div>
+        </div>
+      </div>
+    </section>
+    <section id="downloads" class="page">
+      <div class="section-header">
+        <h2>下载任务</h2>
+        <div class="filters">
+          <button class="button secondary" id="refreshDownloads">刷新</button>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom:16px;">
+        <div class="card-title">新增下载任务</div>
+        <form id="downloadFormCard" style="display:grid; gap:12px;">
+          <input id="platform" name="platform" placeholder="平台 (可选)" />
+          <input id="author" name="author" placeholder="作者 / 来源 (可选)" />
+          <input id="title" name="title" placeholder="标题 / 备注 (可选)" />
+          <textarea id="note" name="note" rows="3" placeholder="任务说明 (可选)"></textarea>
+          <button id="submitDownloadCard" type="submit" class="button primary">提交下载任务</button>
+          <div id="downloadMessage" class="download-message"></div>
+        </form>
+      </div>
+      <div class="card list-card">
+        <table>
+          <thead>
+            <tr><th>ID</th><th>链接</th><th>平台</th><th>状态</th><th>进度</th><th>速度</th><th>时间</th></tr>
+          </thead>
+          <tbody id="downloadsTable"></tbody>
+        </table>
+      </div>
+    </section>
+    <section id="history" class="page">
+      <div class="section-header"><h2>下载历史</h2></div>
+      <div class="card list-card">
+        <table>
+          <thead>
+            <tr><th>ID</th><th>链接</th><th>平台</th><th>状态</th><th>大小</th><th>时间</th></tr>
+          </thead>
+          <tbody id="historyTable"></tbody>
+        </table>
+      </div>
+    </section>
+    <section id="logs" class="page">
+      <div class="section-header"><h2>运行日志</h2></div>
+      <div class="card log-card"><pre id="logContent">加载中...</pre></div>
+    </section>
+    <section id="settings" class="page">
+      <div class="section-header"><h2>系统设置</h2></div>
+      <div class="card settings-card">
+        <pre id="configContent">加载中...</pre>
+      </div>
+    </section>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -3,3 +3,4 @@ requests==2.31.0
 PySocks==1.7.1
 pycryptodome
 tomli
+Flask>=2.3.2

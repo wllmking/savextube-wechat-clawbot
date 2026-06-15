@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>SaveBTube 管理登录</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body class="login-page">
+  <div class="login-panel">
+    <div class="login-brand">
+      <div class="logo">🚀</div>
+      <h1>欢迎回来</h1>
+      <p>登录您的账号以继续使用 SaveBTube 仪表盘</p>
+    </div>
+    <form id="loginForm" class="login-form">
+      <label>用户名</label>
+      <input id="username" name="username" placeholder="用户名" />
+      <label>密码</label>
+      <input id="password" type="password" name="password" placeholder="密码" />
+      <button type="submit" class="button primary">登录</button>
+      <div id="loginError" class="error"></div>
+    </form>
+  </div>
+  <script>
+    const form = document.getElementById('loginForm');
+    const errorBox = document.getElementById('loginError');
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      errorBox.textContent = '';
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      const response = await fetch('/api/login', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username, password}),
+      });
+      const result = await response.json();
+      if (!result.success) {
+        errorBox.textContent = result.message || '登录失败，请检查用户名和密码';
+        return;
+      }
+      window.location.href = '/dashboard';
+    });
+  </script>
+</body>
+</html>

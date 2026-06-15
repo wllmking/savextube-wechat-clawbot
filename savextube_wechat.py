@@ -32,6 +32,7 @@ os.environ.setdefault("SAVEXTUBE_WECHAT_ONLY", "1")
 
 from clawbot_wechat import FINDER_FEED_CARD_MARKER, ClawBotClient, ClawBotError, WeChatInboundMessage  # noqa: E402
 from config_reader import get_proxy_config, load_toml_config  # noqa: E402
+from dashboard_tracking import record_download_result  # noqa: E402
 
 logger = logging.getLogger("savextube.wechat_runner")
 
@@ -638,10 +639,34 @@ class WeChatSaveXTubeBot:
             )
         except Exception as exc:
             logger.exception("download failed")
+            try:
+                record_download_result(
+                    url,
+                    platform,
+                    title="",
+                    status="failed",
+                    success=False,
+                    error=str(exc),
+                    user_id=msg.from_user_id,
+                )
+            except Exception:
+                pass
             await self.send_text(msg, f"下载失败：{exc}")
             return
 
         if not result or not (result.get("success") or result.get("status") == "success"):
+            try:
+                record_download_result(
+                    url,
+                    platform,
+                    title=str(result.get("title") or result.get("filename") or ""),
+                    status="failed",
+                    success=False,
+                    error=str((result or {}).get("error") or ""),
+                    user_id=msg.from_user_id,
+                )
+            except Exception:
+                pass
             await self.send_text(msg, _format_download_error(platform, str((result or {}).get("error") or "")))
             return
 
@@ -701,6 +726,20 @@ class WeChatSaveXTubeBot:
         remaining = len(files) - sent
         if remaining > 0:
             await self.send_text(msg, f"已发送 {sent} 个文件，剩余 {remaining} 个未发送。可调整 WECHAT_MAX_SEND_FILES。")
+        try:
+            record_download_result(
+                url,
+                platform,
+                title=title,
+                status="success",
+                success=True,
+                filesize=sum(file_path.stat().st_size for file_path in files if file_path.exists()),
+                download_path=str(self.downloader.download_path),
+                files=[{"path": str(p), "filename": p.name} for p in files],
+                user_id=msg.from_user_id,
+            )
+        except Exception:
+            pass
 
     def _remember_message(self, message_id: str) -> bool:
         if message_id in self.processed_message_ids:
