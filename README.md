@@ -1,5 +1,7 @@
 # SaveXTube WeChat ClawBot
 
+![Deploy Check](https://github.com/renlixing87/savextube/actions/workflows/deploy_check.yml/badge.svg)
+
 微信 ClawBot 专用的视频下载机器人。用户在微信里给 ClawBot 发送视频链接，机器人下载后通过微信回传可播放的视频文件，发送成功后默认删除容器内本地文件，也可以配置为保留到本地 `downloads/`。
 
 这个仓库是面向 NAS 自用部署的精简版，只保留微信入口和常用中文视频平台，不包含其他聊天机器人入口。一个容器可以同时运行多个 ClawBot session，适合家庭成员分别绑定自己的微信 ClawBot。
@@ -298,6 +300,26 @@ python3 -m unittest discover -s tests -v
 ```bash
 python3 -m py_compile savextube_wechat.py clawbot_wechat.py wechat_downloader.py douyin_note_downloader.py xiaohongshu_downloader.py config_reader.py
 python3 -m unittest discover -s tests -v
+
+部署前建议先运行安全检查脚本：
+
+```bash
+python3 deploy_check.py
+```
+
+本仓库也提供 `Makefile` 作为快捷入口：
+
+```bash
+make check    # 运行部署前安全检查
+make test     # 运行单元测试
+make lint     # 运行 Python 语法检查
+make build    # 构建 Docker 镜像
+make up       # 启动服务
+make logs     # 查看容器日志
+make stop     # 停止服务
+make restart  # 重启服务
+make login    # 启动登录流程
+```
 ```
 
 ## 飞牛 NAS

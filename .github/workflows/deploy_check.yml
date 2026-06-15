@@ -1,0 +1,55 @@
+name: Deploy Check
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  deploy-check:
+    name: Run deploy_check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          # install project requirements (tomli is included)
+          if [ -f requirements.txt ]; then python -m pip install -r requirements.txt; fi
+
+      - name: Run deploy_check (JSON)
+        id: deploy_check
+        run: |
+          python deploy_check.py --json > deploy_check.json || true
+          cat deploy_check.json
+
+      - name: Upload deploy_check result
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy_check.json
+          path: deploy_check.json
+
+      - name: Run unit tests
+        run: |
+          python -m unittest discover -s tests -v
+
+      - name: Fail if errors
+        run: |
+          python - <<'PY'
+import json,sys
+data=json.load(open('deploy_check.json'))
+if data.get('errors'):
+    print('deploy_check found errors:')
+    for e in data['errors']:
+        print('-', e)
+    sys.exit(1)
+print('deploy_check OK; warnings:', data.get('warnings',[]))
+PY
